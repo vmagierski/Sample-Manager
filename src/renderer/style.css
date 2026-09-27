@@ -1,0 +1,231 @@
+:root {
+  --bg: #16171b;
+  --bg-2: #1d1f24;
+  --bg-3: #25282e;
+  --line: #2e3138;
+  --fg: #d9dbe0;
+  --fg-dim: #8a8f99;
+  --accent: #ffaa3c;
+  --sel: #2c3a52;
+  --sel-cursor: #36507a;
+  --row-h: 30px;
+  font: 13px/1.3 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+/* Author display rules (e.g. #empty's flex) would otherwise override [hidden]. */
+[hidden] { display: none !important; }
+html, body { height: 100%; margin: 0; }
+body {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--fg);
+  user-select: none;
+  -webkit-user-select: none;
+  overflow: hidden;
+}
+
+button {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+button:hover { border-color: #444954; }
+button:disabled { opacity: 0.35; cursor: default; }
+button:disabled:hover { border-color: var(--line); }
+#header .nav { display: flex; gap: 4px; }
+#header .nav button { width: 30px; padding: 3px 0 5px; font-size: 17px; line-height: 1; }
+button.link {
+  background: none;
+  border: 0;
+  padding: 0 2px;
+  color: var(--fg-dim);
+  font-size: 11px;
+  font-weight: normal;
+  text-transform: none;
+  letter-spacing: 0;
+}
+button.link:hover { color: var(--fg); }
+
+input[type="search"], input.tag-input {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 9px;
+  outline: none;
+}
+input[type="search"]:focus, input.tag-input:focus { border-color: var(--accent); }
+
+/* header */
+#header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line);
+}
+#search { flex: 1; max-width: 520px; }
+#status { color: var(--accent); font-size: 12px; }
+#count { margin-left: auto; color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+
+/* layout */
+#body { flex: 1; display: flex; min-height: 0; }
+
+#rail {
+  width: 210px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--line);
+  background: var(--bg-2);
+  min-height: 0;
+}
+#rail section { padding: 10px 0 6px; }
+#tag-section { flex: 1; min-height: 0; overflow-y: auto; border-top: 1px solid var(--line); }
+#rail h3 {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 0 14px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+}
+#rail ul { list-style: none; margin: 0; padding: 0; }
+#rail li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+#rail li:hover { background: var(--bg-3); }
+#rail li.on { background: var(--sel); }
+#rail li .name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+#rail li .n { color: var(--fg-dim); font-size: 11px; font-variant-numeric: tabular-nums; }
+#rail li .dot { width: 8px; height: 8px; border-radius: 50%; background: hsl(var(--h, 0) 55% 55%); flex: none; }
+#rail li.untagged .dot { background: var(--fg-dim); }
+#rail li .x { visibility: hidden; color: var(--fg-dim); padding: 0 2px; border: 0; background: none; }
+#rail li:hover .x { visibility: visible; }
+#rail li .x:hover { color: #ff6b6b; }
+#folders .hint { color: var(--fg-dim); cursor: default; font-size: 12px; }
+#rail h3 .actions { display: flex; gap: 8px; }
+#folders { max-height: 42vh; overflow-y: auto; }
+#rail li.dir { gap: 4px; padding-left: calc(10px + var(--d, 0) * 14px); }
+#rail li.dir .tw { width: 12px; flex: none; text-align: center; font-size: 12px; color: var(--fg-dim); cursor: pointer; }
+#rail li.dir .x, #rail li.dir .x-space { width: 16px; flex: none; text-align: center; padding: 0; }
+#rail li.dir .tw:hover { color: var(--fg); }
+#folders .hint:hover { background: none; }
+
+/* list */
+#main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; }
+.row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.3fr) minmax(160px, 1fr) 56px 56px;
+  align-items: center;
+  gap: 12px;
+  height: var(--row-h);
+  padding: 0 14px;
+}
+.row.head {
+  flex: none;
+  height: 26px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-dim);
+  border-bottom: 1px solid var(--line);
+}
+#list { flex: 1; overflow-y: auto; position: relative; outline: none; }
+#spacer { width: 1px; }
+#rows { position: absolute; top: 0; left: 0; right: 0; }
+#rows .row { border-bottom: 1px solid #1c1e22; cursor: default; }
+#rows .row:hover { background: #1c1e23; }
+#rows .row.sel { background: var(--sel); }
+#rows .row.cursor { background: var(--sel-cursor); }
+#rows .row.playing .c-name::before { content: "▶ "; color: var(--accent); font-size: 10px; }
+
+.c-name, .c-tags { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.c-name .dir { color: var(--fg-dim); font-size: 11px; margin-left: 8px; }
+.c-fmt, .c-dur { color: var(--fg-dim); font-size: 12px; font-variant-numeric: tabular-nums; text-align: right; }
+.c-fmt { text-transform: uppercase; font-size: 11px; }
+
+.c-tags { display: flex; gap: 4px; align-items: center; min-height: 22px; cursor: text; }
+.c-tags .add { color: #50545d; font-size: 12px; visibility: hidden; }
+.row:hover .c-tags .add, .row.cursor .c-tags .add { visibility: visible; }
+.chip {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 9px;
+  font-size: 11px;
+  background: hsl(var(--h, 0) 35% 24%);
+  color: hsl(var(--h, 0) 70% 82%);
+}
+.chip.auto { opacity: 0.85; }
+input.tag-input { width: 100%; padding: 2px 7px; font-size: 12px; user-select: text; -webkit-user-select: text; }
+
+#empty {
+  position: absolute;
+  inset: 26px 0 0 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--fg-dim);
+}
+
+/* player */
+#player {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: 64px;
+  padding: 0 14px;
+  background: var(--bg-2);
+  border-top: 1px solid var(--line);
+}
+#play { width: 38px; height: 38px; border-radius: 50%; padding: 0; font-size: 14px; }
+#now { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+#now-name { font-size: 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--fg-dim); }
+#wave { width: 100%; height: 30px; display: block; cursor: pointer; }
+#time { color: var(--fg-dim); font-size: 12px; font-variant-numeric: tabular-nums; min-width: 84px; text-align: right; }
+.toggle { color: var(--fg-dim); font-size: 12px; display: flex; align-items: center; gap: 5px; }
+#volume { width: 90px; accent-color: var(--accent); }
+
+/* Always-visible scrollbar on the list (macOS overlay bars hide until you
+   scroll, and in a 40k-row list you want a thumb you can grab). */
+#list::-webkit-scrollbar { width: 12px; }
+#list::-webkit-scrollbar-track { background: var(--bg); border-left: 1px solid var(--line); }
+#list::-webkit-scrollbar-thumb { background: #3a3e47; border-radius: 6px; border: 3px solid var(--bg); min-height: 40px; }
+#list::-webkit-scrollbar-thumb:hover { background: #505561; }
+#list-head { padding-right: 26px; } /* 14px gutter + list scrollbar */
+
+/* hidden folders stay in the tree (so you can unhide them) but greyed out */
+#rail li.hidden-dir .name, #rail li.hidden-dir .n { opacity: 0.4; text-decoration: line-through; }
+
+#flash { color: var(--fg); font-size: 12px; }
+#rec, #recall { font-size: 12px; padding: 4px 9px; white-space: nowrap; }
+#rec.on { background: #5a1f22; border-color: #c0392b; color: #ffd7d3; font-variant-numeric: tabular-nums; }
+
+/* "Folders ▾" header doubles as the folder menu button */
+#rail h3 .head-menu {
+  background: none; border: 0; padding: 2px 4px; margin-left: -4px; border-radius: 4px;
+  font: inherit; letter-spacing: inherit; text-transform: inherit; color: inherit; cursor: pointer;
+}
+#rail h3 .head-menu:hover { color: var(--fg); background: var(--bg-3); }
+#rail h3 .head-menu .caret { font-size: 9px; margin-left: 2px; }
+#rail li.empty .name, #rail li.empty .n { opacity: 0.45; }

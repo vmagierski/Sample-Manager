@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:">
+  <title>Sample Manager</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header id="header">
+    <div class="nav">
+      <button id="back" title="Back (⌘[)" disabled>‹</button>
+      <button id="fwd" title="Forward (⌘])" disabled>›</button>
+    </div>
+    <button id="random" title="Random sample from the whole library (R)">⤮ Random</button>
+    <input id="search" type="search" placeholder="Search names, folders, tags   /" spellcheck="false" autocomplete="off">
+    <span id="status"></span>
+    <span id="flash"></span>
+    <span id="count"></span>
+  </header>
+
+  <div id="body">
+    <aside id="rail">
+      <section>
+        <h3>
+          <button id="folders-menu" class="head-menu" title="Add folder, rescan…">Folders <span class="caret">▾</span></button>
+          <span class="actions">
+            <button id="clear-folders" class="link" title="Deselect all folders" hidden>clear</button>
+            <button id="collapse" class="link" title="Collapse all folders" hidden>collapse</button>
+          </span>
+        </h3>
+        <ul id="folders"></ul>
+      </section>
+      <section id="tag-section">
+        <h3>Tags <button id="clear-tags" class="link" hidden>clear</button></h3>
+        <ul id="tags"></ul>
+      </section>
+    </aside>
+
+    <main id="main">
+      <div id="list-head" class="row head">
+        <span class="c-name">Name</span>
+        <span class="c-tags">Tags</span>
+        <span class="c-fmt">Format</span>
+        <span class="c-dur">Time</span>
+      </div>
+      <div id="list" tabindex="-1">
+        <div id="spacer"></div>
+        <div id="rows"></div>
+      </div>
+      <div id="empty" hidden></div>
+    </main>
+  </div>
+
+  <footer id="player">
+    <button id="play" title="Play / pause (space)">▶</button>
+    <div id="now">
+      <div id="now-name">Nothing playing</div>
+      <canvas id="wave"></canvas>
+    </div>
+    <span id="time">0:00 / 0:00</span>
+    <button id="rec" title="Record what plays (saved as WAV)">● Rec</button>
+    <button id="recall" title="Save the last 10 seconds you heard">⟲ Last 10s</button>
+    <label class="toggle" title="Play samples as you move through the list"><input type="checkbox" id="autoplay" checked> Auto-play</label>
+    <input type="range" id="volume" min="0" max="1" step="0.01" value="0.8" title="Volume">
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
