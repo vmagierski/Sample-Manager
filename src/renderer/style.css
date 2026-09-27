@@ -1,5 +1,6 @@
 :root {
-  --wave-h: 48px; /* player waveform height; set by dragging the grip */
+  --wave-h: 48px;
+  --rail-w: 232px; /* sidebar width; set by dragging its right edge */ /* player waveform height; set by dragging the grip */
   --bg: #16171b;
   --bg-2: #1d1f24;
   --bg-3: #25282e;
@@ -66,23 +67,30 @@ input[type="search"], input.tag-input {
 input[type="search"]:focus, input.tag-input:focus { border-color: var(--accent); }
 
 /* header */
+/* three columns: [nav · random] [search, centred] [status · count]. The
+   equal 1fr sides keep the search box centred whatever is on either side. */
 #header {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr minmax(240px, 560px) 1fr;
   align-items: center;
   gap: 12px;
   padding: 10px 14px;
   background: var(--bg-2);
   border-bottom: 1px solid var(--line);
 }
-#search { flex: 1; max-width: 520px; }
+#header .side { display: flex; align-items: center; gap: 12px; min-width: 0; }
+#header .side.right { justify-content: flex-end; }
+#search { width: 100%; min-width: 0; }
 #status { color: var(--accent); font-size: 12px; }
-#count { margin-left: auto; color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+#count { color: var(--fg-dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+#status, #flash { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 
 /* layout */
 #body { flex: 1; display: flex; min-height: 0; }
 
 #rail {
-  width: 232px;
+  position: relative;
+  width: var(--rail-w);
   flex: none;
   display: flex;
   flex-direction: column;
@@ -268,3 +276,15 @@ body.resizing, body.resizing * { cursor: ns-resize !important; }
 /* "Show in Sidebar" highlight */
 @keyframes sidebar-flash { from { background: rgba(255, 170, 60, 0.45); } to { background: transparent; } }
 #rail li.flash { animation: sidebar-flash 1.6s ease-out; }
+
+/* sidebar filter boxes */
+#rail .rail-filter { flex: none; margin: 0 12px 6px; padding: 3px 8px; font-size: 12px; min-width: 0; }
+#rail section.collapsed > .rail-filter { display: none; }
+#rail mark { background: none; color: var(--accent); font-weight: 600; }
+#tags .hint { color: var(--fg-dim); cursor: default; font-size: 12px; }
+#tags .hint:hover { background: none; }
+
+/* drag handle along the sidebar's right edge */
+#rail-grip { position: absolute; top: 0; bottom: 0; right: -4px; width: 8px; cursor: ew-resize; z-index: 3; }
+#rail-grip:hover { background: linear-gradient(90deg, transparent 3px, var(--accent) 3px, var(--accent) 5px, transparent 5px); opacity: 0.6; }
+body.resizing-x, body.resizing-x * { cursor: ew-resize !important; }

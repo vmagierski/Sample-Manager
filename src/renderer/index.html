@@ -8,15 +8,19 @@
 </head>
 <body>
   <header id="header">
-    <div class="nav">
-      <button id="back" title="Back (⌘[)" disabled>‹</button>
-      <button id="fwd" title="Forward (⌘])" disabled>›</button>
+    <div class="side left">
+      <div class="nav">
+        <button id="back" title="Back (⌘[)" disabled>‹</button>
+        <button id="fwd" title="Forward (⌘])" disabled>›</button>
+      </div>
+      <button id="random" title="Random sample from the whole library (R)">⤮ Random</button>
     </div>
-    <button id="random" title="Random sample from the whole library (R)">⤮ Random</button>
     <input id="search" type="search" placeholder="Search names, folders, tags   /" spellcheck="false" autocomplete="off">
-    <span id="status"></span>
-    <span id="flash"></span>
-    <span id="count"></span>
+    <div class="side right">
+      <span id="status"></span>
+      <span id="flash"></span>
+      <span id="count"></span>
+    </div>
   </header>
 
   <div id="body">
@@ -30,6 +34,7 @@
             <button id="folders-menu" class="link more" title="Add folder, rescan…">⋯</button>
           </span>
         </h3>
+        <input id="folder-filter" class="rail-filter" type="search" placeholder="Filter folders…" spellcheck="false" autocomplete="off">
         <ul id="folders"></ul>
       </section>
       <section id="tag-section">
@@ -37,8 +42,10 @@
           <button id="tags-toggle" class="sec-toggle" aria-expanded="true" title="Show / hide tags"><span class="chev">▾</span> Tags</button>
           <span class="actions"><button id="clear-tags" class="link" hidden>clear</button></span>
         </h3>
+        <input id="tag-filter" class="rail-filter" type="search" placeholder="Filter tags…" spellcheck="false" autocomplete="off">
         <ul id="tags"></ul>
       </section>
+      <div id="rail-grip" title="Drag to resize the sidebar · double-click to reset"></div>
     </aside>
 
     <main id="main">
@@ -72,9 +79,9 @@
       <span id="time">0:00 / 0:00</span>
       <div class="group listen">
         <label class="toggle" title="Play samples as you move through the list"><input type="checkbox" id="autoplay" checked> Auto-play</label>
-        <label class="vol" title="Volume (doesn't affect Rec / Last 10s)">
+        <label class="vol" id="vol-label" title="Volume: 0 dB">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg>
-          <input type="range" id="volume" min="0" max="1" step="0.01" value="0.8">
+          <input type="range" id="volume" min="0" max="100" step="1" value="50">
         </label>
       </div>
       <div class="group capture">

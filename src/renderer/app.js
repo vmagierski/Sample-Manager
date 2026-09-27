@@ -18,8 +18,11 @@ const ui = {
   rec: $('#rec'),
   recall: $('#recall'),
   flash: $('#flash'),
+  volLabel: $('#vol-label'),
   fwd: $('#fwd'),
   foldersMenu: $('#folders-menu'),
+  folderFilter: $('#folder-filter'),
+  tagFilter: $('#tag-filter'),
   rail: $('#rail'),
   folderSection: $('#folder-section'),
   tagSection: $('#tag-section'),
@@ -42,6 +45,7 @@ const ui = {
   wave: $('#wave'),
   loop: $('#loop'),
   grip: $('#player-grip'),
+  railGrip: $('#rail-grip'),
   cropInfo: $('#crop-info'),
   cropLen: $('#crop-len'),
   cropClear: $('#crop-clear'),
@@ -61,6 +65,7 @@ const state = {
   tree: [], // root nodes: { path, name, n, total, kids: Map, folder }
   hidden: new Set(), // hidden folder paths
   expanded: loadExpanded(), // dir paths open in the folder tree
+  filterClosed: new Set(), // folders closed by hand while the folder filter is on
   selected: new Set(), // sample ids
   cursor: -1,
   anchor: -1,
@@ -263,6 +268,94 @@ function renderEmpty() {
   }
 }
 
+// --- fuzzy filter (sidebar) --------------------------------------------------------
+//
+// Every space-separated term must appear in the text in order, case-insensitive
+// ("vdrm" → "Vintage Drum Samples"). A term found as a contiguous run is
+// highlighted as that run; otherwise its letters. Returns the matched
+// character indices, [] for an empty query, or null for no match.
+function fuzzy(query, text) {
+  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const t = text.toLowerCase();
+  const hits = new Set();
+  for (const term of terms) {
+    const at = t.indexOf(term);
+    if (at >= 0) {
+      for (let i = 0; i < term.length; i++) hits.add(at + i);
+      continue;
+    }
+    const idx = [];
+    for (let i = 0, j = 0; i < t.length && j < term.length; i++) {
+      if (t[i] === term[j]) {
+        idx.push(i);
+        j++;
+      }
+    }
+    if (idx.length < term.length) return null;
+    for (const i of idx) hits.add(i);
+  }
+  return [...hits].sort((a, b) => a - b);
+}
+
+// How good a single term's match in `text` is, for ranking (null = no match):
+//   whole word / word start (“snare” in “02 Snares”)  100
+//   contiguous but mid-word (“nare” in “Snares”)        70
+//   scattered letters (“snare” in “Vision and Verse”)   ≤ 40, less the more spread out
+// Shorter names win ties slightly (a closer fit).
+function termScore(term, text) {
+  const t = text.toLowerCase();
+  let at = t.indexOf(term);
+  if (at >= 0) {
+    let best = 70;
+    for (; at >= 0; at = t.indexOf(term, at + 1)) {
+      if (at === 0 || !/[a-z0-9]/.test(t[at - 1]) || (/[0-9]/.test(t[at - 1]) && /[a-z]/.test(term[0]))) {
+        best = 100;
+        break;
+      }
+    }
+    return best - t.length * 0.05;
+  }
+  let first = -1;
+  let last = -1;
+  for (let i = 0, j = 0; i < t.length && j < term.length; i++) {
+    if (t[i] === term[j]) {
+      if (first < 0) first = i;
+      last = i;
+      j++;
+      if (j === term.length) {
+        const spread = last - first + 1 - term.length; // letters skipped in between
+        return Math.max(1, 40 - spread * 2) - t.length * 0.05;
+      }
+    }
+  }
+  return null;
+}
+
+// <span class="name"> with the matched characters wrapped in <mark>.
+function nameWithHits(text, hits) {
+  const span = el('span', 'name');
+  if (!hits || !hits.length) {
+    span.textContent = text;
+    return span;
+  }
+  const set = new Set(hits);
+  let run = '';
+  let inHit = set.has(0);
+  const flush = () => {
+    if (run) span.append(inHit ? el('mark', null, run) : document.createTextNode(run));
+    run = '';
+  };
+  for (let i = 0; i < text.length; i++) {
+    if (set.has(i) !== inHit) {
+      flush();
+      inHit = set.has(i);
+    }
+    run += text[i];
+  }
+  flush();
+  return span;
+}
+
 // --- folder tree -------------------------------------------------------------
 
 // Opened folders last for the session only: every launch starts with just the
@@ -344,18 +437,90 @@ function renderFolders() {
   ui.folders.replaceChildren();
   if (!state.tree.length) ui.folders.append(el('li', 'hint', 'No folders — ⌘O to add one'));
 
-  const addNode = (node, depth) => {
+  // Filter box: keep folders whose name fuzzy-matches, plus the folders leading
+  // to them (opened automatically — without touching state.expanded, so
+  // clearing the box restores the tree as it was). Below a matching folder,
+  // everything shows as normal.
+  const q = ui.folderFilter.value.trim();
+  const hitsFor = new Map(); // path -> matched char indices
+  const keep = new Set(); // paths to show
+  const autoOpen = new Set(); // paths opened because something below matches
+  const score = new Map(); // path -> this folder's own match score
+  const best = new Map(); // path -> best score in its subtree (for ordering)
+  if (q) {
+    // Each term must match this folder's name or one of its parents' names,
+    // and at least one must match this folder itself — so "dr ks" finds
+    // Drums › Kicks. Only this folder's own matches are highlighted/scored.
+    const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
+    // A term that appears as-is in some folder name only counts as-is:
+    // scattered-letter matches ("Sine Saw Square" for "snare") are dropped.
+    // Terms found nowhere as-is (abbreviations like "snr") stay fuzzy.
+    const exactSomewhere = new Set();
+    const scan = (node) => {
+      const n = node.name.toLowerCase();
+      for (const term of terms) if (n.includes(term)) exactSomewhere.add(term);
+      node.kids.forEach(scan);
+    };
+    state.tree.forEach(scan);
+    const match = (term, name) => {
+      if (exactSomewhere.has(term) && !name.toLowerCase().includes(term)) return null;
+      return termScore(term, name);
+    };
+    const visit = (node, ancestors) => {
+      const own = [];
+      let ownScore = 0;
+      let ok = true;
+      for (const term of terms) {
+        const sc = match(term, node.name);
+        if (sc != null) {
+          ownScore += sc;
+          own.push(...fuzzy(term, node.name));
+        } else if (!ancestors.some((name) => match(term, name) != null)) ok = false;
+      }
+      // Shallower folders rank a little higher (category folders like
+      // "03 Single Drums › 02 Snares" over one buried deep in a pack).
+      if (own.length) ownScore -= ancestors.length * 0.5;
+      const hits = ok && own.length ? [...new Set(own)].sort((a, b) => a - b) : null;
+      if (hits) {
+        hitsFor.set(node.path, hits);
+        score.set(node.path, ownScore);
+      }
+      let bestBelow = -Infinity;
+      const chain = [...ancestors, node.name];
+      for (const kid of node.kids.values()) {
+        if (visit(kid, chain)) bestBelow = Math.max(bestBelow, best.get(kid.path));
+      }
+      const below = bestBelow > -Infinity;
+      // Open the way down to matches, but stop at the first matching folder on
+      // each branch (it stays closed, ▸) — unless something inside it matches
+      // clearly better. Keeps e.g. "snare" from unrolling 150 subfolders.
+      const openIt = below && (!hits || bestBelow > ownScore + 10);
+      if (openIt && !state.hidden.has(node.path) && !state.filterClosed.has(node.path)) autoOpen.add(node.path);
+      if (hits || below) {
+        keep.add(node.path);
+        best.set(node.path, Math.max(hits ? ownScore : -Infinity, bestBelow));
+      }
+      return !!hits || below;
+    };
+    for (const root of state.tree) visit(root, []);
+    if (!keep.size && state.tree.length) ui.folders.append(el('li', 'hint', 'No folders match'));
+  }
+  // While filtering, siblings are ordered by their best match (then by name).
+  const ranked = (a, b) => best.get(b.path) - best.get(a.path) || byName(a, b);
+
+  const addNode = (node, depth, underMatch) => {
+    if (q && !underMatch && !keep.has(node.path)) return;
     // A hidden folder hides its whole subtree: it can't be expanded, so its
     // subfolders don't show until you unhide it.
     const hidden = state.hidden.has(node.path);
     const expandable = node.kids.size > 0 && !hidden;
-    const open = expandable && state.expanded.has(node.path);
+    const open = expandable && (state.expanded.has(node.path) || autoOpen.has(node.path));
     const li = el('li', `dir${state.filter.dirs.has(node.path) ? ' on' : ''}${hidden ? ' hidden-dir' : ''}`);
     li.style.setProperty('--d', depth);
     li.dataset.path = node.path;
     li.title = hidden ? `${node.path}\nHidden — right-click to unhide` : node.path;
     const tw = el('span', 'tw', expandable ? (open ? '▾' : '▸') : '');
-    li.append(tw, el('span', 'name', node.name), el('span', 'n', (hidden ? node.total : node.n).toLocaleString()));
+    li.append(tw, nameWithHits(node.name, hitsFor.get(node.path)), el('span', 'n', (hidden ? node.total : node.n).toLocaleString()));
     if (node.folder) {
       const x = el('button', 'x', '×');
       x.title = 'Remove folder from library';
@@ -371,8 +536,13 @@ function renderFolders() {
     tw.addEventListener('click', (e) => {
       e.stopPropagation();
       if (!expandable) return;
-      if (open) state.expanded.delete(node.path);
-      else state.expanded.add(node.path);
+      if (open) {
+        state.expanded.delete(node.path);
+        if (autoOpen.has(node.path)) state.filterClosed.add(node.path);
+      } else {
+        state.expanded.add(node.path);
+        state.filterClosed.delete(node.path);
+      }
           renderFolders();
     });
     // Click: just this folder (click again to deselect). ⇧/⌘-click: add/remove it.
@@ -395,9 +565,16 @@ function renderFolders() {
       window.sm.dirMenu(node.path);
     });
     ui.folders.append(li);
-    if (open) for (const kid of [...node.kids.values()].sort(byName)) addNode(kid, depth + 1);
+    const below = underMatch || hitsFor.has(node.path);
+    if (open) {
+      const kids = [...node.kids.values()];
+      // Filtering (and not inside a match): only kept folders, best first.
+      if (q && !below) kids.filter((k) => keep.has(k.path)).sort(ranked).forEach((k) => addNode(k, depth + 1, false));
+      else kids.sort(byName).forEach((k) => addNode(k, depth + 1, below));
+    }
   };
-  for (const root of state.tree) addNode(root, 0);
+  const roots = q ? state.tree.filter((r) => keep.has(r.path)).sort(ranked) : state.tree;
+  for (const root of roots) addNode(root, 0, false);
 
   ui.folders.scrollTop = scroll;
   ui.collapse.hidden = !state.expanded.size;
@@ -407,14 +584,21 @@ function renderFolders() {
 
 function renderRail() {
   renderFolders();
+  renderTags();
+}
 
-  // tags
+function renderTags() {
   ui.tags.replaceChildren();
+  const q = ui.tagFilter.value.trim();
+  let shown = 0;
   const addTagItem = (name, count, on, cls, onClick) => {
+    const hits = q ? fuzzy(q, name) : null;
+    if (q && !hits) return;
+    shown++;
     const li = el('li', [cls, on ? 'on' : ''].filter(Boolean).join(' '));
     const dot = el('span', 'dot');
     dot.style.setProperty('--h', hue(name));
-    li.append(dot, el('span', 'name', name), el('span', 'n', count.toLocaleString()));
+    li.append(dot, nameWithHits(name, hits), el('span', 'n', count.toLocaleString()));
     if (!count) li.classList.add('empty');
     li.addEventListener('click', onClick);
     if (cls !== 'untagged') {
@@ -425,7 +609,11 @@ function renderRail() {
     }
     ui.tags.append(li);
   };
-  for (const t of state.tagCounts) {
+  // While filtering, best matches first (whole-word before scattered letters).
+  const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
+  const tagScore = (name) => terms.reduce((sum, term) => sum + (termScore(term, name) ?? 0), 0);
+  const list = q ? [...state.tagCounts].sort((a, b) => tagScore(b.name) - tagScore(a.name) || a.name.localeCompare(b.name)) : state.tagCounts;
+  for (const t of list) {
     addTagItem(t.name, t.count, state.filter.tags.has(t.name), '', () => {
       changeView('tag', () => {
         if (state.filter.tags.has(t.name)) state.filter.tags.delete(t.name);
@@ -442,6 +630,7 @@ function renderRail() {
       });
     });
   }
+  if (q && !shown) ui.tags.append(el('li', 'hint', 'No tags match'));
   ui.clearTags.hidden = !(state.filter.tags.size || state.filter.untagged);
 }
 
@@ -749,7 +938,7 @@ function audioCtx() {
     player.ctx = new AudioContext({ latencyHint: 'interactive' });
     player.bus = player.ctx.createGain();
     player.gain = player.ctx.createGain();
-    player.gain.gain.value = +ui.volume.value;
+    player.gain.gain.value = volumeGain();
     player.bus.connect(player.gain);
     player.gain.connect(player.ctx.destination);
     tap.ready = startTap(player.ctx);
@@ -1288,6 +1477,53 @@ ui.grip.addEventListener('dblclick', () => {
 });
 new ResizeObserver(sizeWave).observe(ui.wave);
 
+// --- resizable sidebar ----------------------------------------------------------------------
+// Drag the sidebar's right edge (deep folder trees need room); remembered.
+// Double-click the edge to reset.
+
+const RAIL_MIN = 180;
+
+function setRailWidth(w) {
+  const max = Math.max(RAIL_MIN, Math.min(640, Math.round(window.innerWidth * 0.5)));
+  const px = clamp(Math.round(w), RAIL_MIN, max);
+  document.documentElement.style.setProperty('--rail-w', `${px}px`);
+  return px;
+}
+
+(() => {
+  try {
+    const saved = +localStorage.getItem('sm.railW');
+    if (saved) setRailWidth(saved);
+  } catch {}
+})();
+
+ui.railGrip.addEventListener('mousedown', (e) => {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  const x0 = e.clientX;
+  const w0 = ui.rail.getBoundingClientRect().width;
+  document.body.classList.add('resizing-x');
+  const move = (ev) => setRailWidth(w0 + (ev.clientX - x0));
+  window.addEventListener('mousemove', move);
+  window.addEventListener(
+    'mouseup',
+    () => {
+      window.removeEventListener('mousemove', move);
+      document.body.classList.remove('resizing-x');
+      try {
+        localStorage.setItem('sm.railW', String(Math.round(ui.rail.getBoundingClientRect().width)));
+      } catch {}
+    },
+    { once: true },
+  );
+});
+ui.railGrip.addEventListener('dblclick', () => {
+  document.documentElement.style.removeProperty('--rail-w');
+  try {
+    localStorage.removeItem('sm.railW');
+  } catch {}
+});
+
 // --- keyboard ---------------------------------------------------------------------------
 
 // --- Rec / Recall -----------------------------------------------------------------
@@ -1660,6 +1896,27 @@ ui.foldersMenu.addEventListener('click', () => {
 });
 ui.clearFolders.addEventListener('click', deselectFolders);
 
+// Sidebar filter boxes: narrow the folder tree / tag list as you type.
+// Esc clears the box (a second Esc leaves it).
+function wireRailFilter(input, render, list) {
+  input.addEventListener('input', () => {
+    state.filterClosed.clear();
+    render();
+    list.scrollTop = 0;
+  });
+  input.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    e.stopPropagation();
+    if (input.value) {
+      input.value = '';
+      state.filterClosed.clear();
+      render();
+    } else input.blur();
+  });
+}
+wireRailFilter(ui.folderFilter, renderFolders, ui.folders);
+wireRailFilter(ui.tagFilter, renderTags, ui.tags);
+
 // "Show in Sidebar": open the tree down to a sample's folder, scroll to it and
 // flash it. Doesn't touch filters. Stops at a hidden folder (can't be opened).
 function revealInSidebar(filePath) {
@@ -1724,8 +1981,29 @@ window.sm.onEditTags((id) => {
   const i = state.rows.findIndex((r) => r.id === id);
   if (i >= 0) startEdit(i);
 });
-ui.volume.addEventListener('input', () => {
-  if (player.gain) player.gain.gain.value = +ui.volume.value;
+// Volume slider 0–100 in decibels: the middle (50) is 0 dB — samples play
+// exactly as recorded — the right end +6 dB, the left end silence (-48 dB just
+// before it). Double-click snaps back to 0 dB. Rec / Last 10s record before
+// this, so the slider never changes what gets saved.
+function volumeDb() {
+  const v = +ui.volume.value;
+  return v >= 50 ? ((v - 50) / 50) * 6 : ((50 - v) / 50) * -48;
+}
+
+function volumeGain() {
+  return +ui.volume.value === 0 ? 0 : 10 ** (volumeDb() / 20);
+}
+
+function onVolume() {
+  if (player.gain) player.gain.gain.value = volumeGain();
+  const db = volumeDb();
+  const txt = Math.abs(db) < 0.05 ? '0' : `${db > 0 ? '+' : ''}${db.toFixed(1)}`;
+  ui.volLabel.title = +ui.volume.value === 0 ? 'Volume: muted' : `Volume: ${txt} dB`;
+}
+ui.volume.addEventListener('input', onVolume);
+ui.volume.addEventListener('dblclick', () => {
+  ui.volume.value = 50;
+  onVolume();
 });
 
 // Header buttons shouldn't steal keyboard focus from the list.
