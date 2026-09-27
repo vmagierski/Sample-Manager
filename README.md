@@ -27,6 +27,8 @@ The library DB lives in `~/Library/Application Support/sample-manager/library.db
 | Space | Play / pause |
 | Enter or T | Edit tags of current row (comma-separated; Enter saves, Esc cancels) |
 | / or ⌘F | Search (↑/↓ still move the list while typing) |
+| Enter (in search) | Keep the search as a chip and start another (`#tag` adds a tag chip) |
+| Backspace (empty search) | Remove the last chip |
 | ⌘A | Select all visible |
 | Esc | Stop |
 | I / O | Set crop start / end at the playhead |
@@ -36,7 +38,7 @@ The library DB lives in `~/Library/Application Support/sample-manager/library.db
 | ⌥⌘R | Show current sample in Finder |
 | ⌘O / ⇧⌘R | Add folder / rescan library (reloads `tag-rules.json`) |
 
-Click a folder (or any subfolder via ▸) in the sidebar to show only what is below it; ⇧/⌘-click to select several. Search looks inside the selected folders (the search box says so); "clear" deselects them, "collapse" closes the tree. The **⋯** next to Folders adds a folder or rescans; click the **Folders** / **Tags** headers to collapse either section. Each launch starts with only top-level folders open and no filters. The **Filter folders… / Filter tags…** boxes narrow the sidebar as you type. Whole-word matches rank first and the tree opens only down to the first matching folder (`snare` → EXS Factory › … › **02 Snares**); scattered-letter matches (`snr`, `vint snr`) are used only when nothing contains the word as typed. For folders each word may match a parent (`dr ks` → Drums › Kicks). Esc clears. Drag the sidebar's right edge to widen it (double-click to reset). Right-click a folder to hide it (struck through; right-click again to unhide).
+Active filters are always visible: tags and kept searches show as chips in the search box (× removes one), and the Folders / Tags headers show an orange label for the current folder / tag filter even when the section is collapsed (× clears it). Click a folder (or any subfolder via ▸) in the sidebar to show only what is below it; ⇧/⌘-click to select several. Search looks inside the selected folders (the search box says so); the orange label × deselects them; ⋯ → Collapse All closes the tree. The **⋯** next to Folders adds a folder or rescans; click the **Folders** / **Tags** headers to collapse either section. Each launch starts with only top-level folders open and no filters. The **Filter folders… / Filter tags…** boxes narrow the sidebar as you type. Whole-word matches rank first and the tree opens only down to the first matching folder (`snare` → EXS Factory › … › **02 Snares**); scattered-letter matches (`snr`, `vint snr`) are used only when nothing contains the word as typed. For folders each word may match a parent (`dr ks` → Drums › Kicks). Esc clears. Drag the sidebar's right edge to widen it (double-click to reset). Right-click a folder to hide it (struck through; right-click again to unhide).
 
 **Crop:** drag across the player waveform to select part of a sample (drag the edges to resize, drag inside to move it, click outside or double-click to clear). Drag the top edge of the player to make the waveform taller. Playback stays inside the crop and **Loop** switches on (it's off by default; on without a crop it loops the whole sample), the row gets a ✂, and dragging the sample into your DAW drags just that part — a WAV saved to `~/Music/Sample Manager/Crops` (tagged *crop*). WAV/AIFF crops are cut losslessly in the original format; other formats become 24-bit WAV. Crops last for the session.
 

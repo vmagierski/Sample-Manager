@@ -15,7 +15,10 @@
       </div>
       <button id="random" title="Random sample from the whole library (R)">⤮ Random</button>
     </div>
-    <input id="search" type="search" placeholder="Search names, folders, tags   /" spellcheck="false" autocomplete="off">
+    <div id="searchbox">
+      <div id="chips" hidden></div>
+      <input id="search" type="search" placeholder="Search names, folders, tags   /" spellcheck="false" autocomplete="off">
+    </div>
     <div class="side right">
       <span id="status"></span>
       <span id="flash"></span>
@@ -28,21 +31,20 @@
       <section id="folder-section">
         <h3>
           <button id="folders-toggle" class="sec-toggle" aria-expanded="true" title="Show / hide folders"><span class="chev">▾</span> Folders</button>
+          <input id="folder-filter" class="rail-filter" type="search" placeholder="Filter…" title="Filter the folder tree (fuzzy)" spellcheck="false" autocomplete="off">
           <span class="actions">
-            <button id="clear-folders" class="link" title="Deselect all folders" hidden>clear</button>
-            <button id="collapse" class="link" title="Collapse all folders" hidden>collapse</button>
-            <button id="folders-menu" class="link more" title="Add folder, rescan…">⋯</button>
+            <button id="folders-menu" class="link more" title="Add folder, rescan, collapse all…">⋯</button>
           </span>
         </h3>
-        <input id="folder-filter" class="rail-filter" type="search" placeholder="Filter folders…" spellcheck="false" autocomplete="off">
+        <div id="folder-chips" class="rail-chips" hidden></div>
         <ul id="folders"></ul>
       </section>
       <section id="tag-section">
         <h3>
           <button id="tags-toggle" class="sec-toggle" aria-expanded="true" title="Show / hide tags"><span class="chev">▾</span> Tags</button>
-          <span class="actions"><button id="clear-tags" class="link" hidden>clear</button></span>
+          <input id="tag-filter" class="rail-filter" type="search" placeholder="Filter…" title="Filter the tag list (fuzzy)" spellcheck="false" autocomplete="off">
         </h3>
-        <input id="tag-filter" class="rail-filter" type="search" placeholder="Filter tags…" spellcheck="false" autocomplete="off">
+        <div id="tag-chips" class="rail-chips" hidden></div>
         <ul id="tags"></ul>
       </section>
       <div id="rail-grip" title="Drag to resize the sidebar · double-click to reset"></div>

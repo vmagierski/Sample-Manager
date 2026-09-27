@@ -80,7 +80,23 @@ input[type="search"]:focus, input.tag-input:focus { border-color: var(--accent);
 }
 #header .side { display: flex; align-items: center; gap: 12px; min-width: 0; }
 #header .side.right { justify-content: flex-end; }
-#search { width: 100%; min-width: 0; }
+/* search box: chips (tags, saved searches) + the text field, one bordered box */
+#searchbox {
+  display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 3px 4px 3px 5px; cursor: text;
+}
+#searchbox:focus-within { border-color: var(--accent); }
+#chips { display: flex; gap: 4px; flex: 0 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+#chips::-webkit-scrollbar { display: none; }
+#searchbox #search { flex: 1 1 140px; min-width: 140px; border: 0; background: none; padding: 2px 4px; }
+.fchip {
+  display: inline-flex; align-items: center; gap: 2px; flex: none; padding: 1px 2px 1px 8px; border-radius: 10px;
+  font-size: 12px; white-space: nowrap; background: #2c3039; color: var(--fg); cursor: default;
+}
+.fchip.tag { background: hsl(var(--h, 0) 35% 24%); color: hsl(var(--h, 0) 70% 82%); }
+.fchip.untagged { background: #33363d; color: var(--fg-dim); }
+.fchip-x { background: none; border: 0; padding: 0 5px; color: inherit; opacity: 0.6; font-size: 13px; line-height: 1; }
+.fchip-x:hover { opacity: 1; border: 0; }
 #status { color: var(--accent); font-size: 12px; }
 #count { color: var(--fg-dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
 #status, #flash { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
@@ -127,7 +143,10 @@ input[type="search"]:focus, input.tag-input:focus { border-color: var(--accent);
   color: var(--fg-dim);
   white-space: nowrap; /* never wrap the header, however many links show */
   gap: 8px;
+  justify-content: flex-start;
 }
+#rail h3 .actions { margin-left: auto; }
+
 #rail ul { list-style: none; margin: 0; padding: 0; }
 #rail li {
   display: flex;
@@ -278,8 +297,15 @@ body.resizing, body.resizing * { cursor: ns-resize !important; }
 #rail li.flash { animation: sidebar-flash 1.6s ease-out; }
 
 /* sidebar filter boxes */
-#rail .rail-filter { flex: none; margin: 0 12px 6px; padding: 3px 8px; font-size: 12px; min-width: 0; }
-#rail section.collapsed > .rail-filter { display: none; }
+/* filter box sits in the section header, between the title and ⋯ */
+#rail h3 .rail-filter { flex: 1 1 auto; min-width: 0; margin: 0; padding: 2px 7px; font-size: 12px; font-weight: 400; letter-spacing: 0; text-transform: none; }
+#rail section.collapsed .rail-filter { display: none; }
+/* active filters under the header: one chip per selected folder / tag.
+   Stays visible when the section is collapsed. */
+#rail .rail-chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 12px 7px; }
+#rail .rail-chips .fchip { max-width: 100%; }
+#rail .rail-chips .fchip-label { overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.fchip.dir { background: rgba(255, 170, 60, 0.16); color: var(--accent); }
 #rail mark { background: none; color: var(--accent); font-weight: 600; }
 #tags .hint { color: var(--fg-dim); cursor: default; font-size: 12px; }
 #tags .hint:hover { background: none; }

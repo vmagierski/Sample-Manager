@@ -28,14 +28,15 @@ const ui = {
   tagSection: $('#tag-section'),
   foldersToggle: $('#folders-toggle'),
   tagsToggle: $('#tags-toggle'),
-  clearFolders: $('#clear-folders'),
+  folderChips: $('#folder-chips'),
   search: $('#search'),
   status: $('#status'),
   count: $('#count'),
-  collapse: $('#collapse'),
   folders: $('#folders'),
   tags: $('#tags'),
-  clearTags: $('#clear-tags'),
+  tagChips: $('#tag-chips'),
+  searchbox: $('#searchbox'),
+  chips: $('#chips'),
   list: $('#list'),
   spacer: $('#spacer'),
   rows: $('#rows'),
@@ -60,7 +61,8 @@ const state = {
   folders: [],
   tagCounts: [],
   untaggedCount: 0,
-  filter: { search: '', tags: new Set(), untagged: false, dirs: new Set() },
+  // search = what's being typed (live); queries = searches saved as chips (Enter)
+  filter: { search: '', queries: [], tags: new Set(), untagged: false, dirs: new Set() },
   dirs: [], // [{ folderId, dir, n }] — directories that directly hold samples
   tree: [], // root nodes: { path, name, n, total, kids: Map, folder }
   hidden: new Set(), // hidden folder paths
@@ -109,7 +111,7 @@ async function refreshList(opts = {}) {
   const cursorId = restore ? restore.cursorId : state.rows[state.cursor]?.id;
   const { filter } = state;
   const res = await window.sm.listSamples({
-    search: filter.search,
+    search: [...filter.queries, filter.search].join(' '), // every word ANDed
     tags: [...filter.tags],
     untagged: filter.untagged,
     dirs: [...filter.dirs],
@@ -153,7 +155,7 @@ const NAV_MAX = 100;
 function snapshot() {
   const f = state.filter;
   return {
-    filter: { search: f.search, tags: [...f.tags], untagged: f.untagged, dirs: [...f.dirs] },
+    filter: { search: f.search, queries: [...f.queries], tags: [...f.tags], untagged: f.untagged, dirs: [...f.dirs] },
     cursorId: state.rows[state.cursor]?.id ?? null,
     selected: [...state.selected],
     scrollTop: ui.list.scrollTop,
@@ -190,7 +192,7 @@ async function goNav(step) {
   nav.lastKind = null;
   if (state.editing) cancelEdit();
   const f = snap.filter;
-  state.filter = { search: f.search, tags: new Set(f.tags), untagged: f.untagged, dirs: new Set(f.dirs) };
+  state.filter = { search: f.search, queries: [...f.queries], tags: new Set(f.tags), untagged: f.untagged, dirs: new Set(f.dirs) };
   clearTimeout(searchTimer);
   ui.search.value = f.search;
   renderRail();
@@ -409,17 +411,98 @@ function buildTree() {
 const byName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
 
 // Search runs inside the selected folders; say so in the search box.
+// --- search chips ---------------------------------------------------------------------
+//
+// The main search box shows every active tag and saved search as a chip:
+// tags picked in the sidebar (or typed as #tag + Enter), and searches saved
+// with Enter. All are ANDed with whatever is being typed. × or Backspace
+// (in an empty box) removes one. Folders stay in the sidebar — the "where".
+
+function chip(cls, label, onRemove, hueName) {
+  const c = el('span', `fchip ${cls}`);
+  if (hueName) c.style.setProperty('--h', hue(hueName));
+  c.append(el('span', 'fchip-label', label));
+  const x = el('button', 'fchip-x', '×');
+  x.title = 'Remove';
+  x.tabIndex = -1;
+  x.addEventListener('mousedown', (e) => e.preventDefault()); // keep typing focus
+  x.addEventListener('click', (e) => {
+    e.stopPropagation();
+    onRemove();
+  });
+  c.append(x);
+  return c;
+}
+
+function renderChips() {
+  const f = state.filter;
+  const chips = [];
+  if (f.untagged) chips.push(chip('tag untagged', 'untagged', () => changeView('tag', () => (f.untagged = false))));
+  for (const t of f.tags) chips.push(chip('tag', t, () => changeView('tag', () => f.tags.delete(t)), t));
+  f.queries.forEach((qq, i) => chips.push(chip('query', `“${qq}”`, () => changeView('search', () => f.queries.splice(i, 1)))));
+  ui.chips.replaceChildren(...chips);
+  ui.chips.hidden = !chips.length;
+  renderSearchScope();
+}
+
+// Enter in the search box: "#name" adds that tag, anything else becomes a
+// saved search chip.
+function commitSearchText(text) {
+  const f = state.filter;
+  clearTimeout(searchTimer);
+  ui.search.value = '';
+  if (text.startsWith('#') && text.length > 1) {
+    const name = text.slice(1).trim().toLowerCase();
+    if (name === 'untagged') {
+      changeView('tag', () => {
+        f.search = '';
+        f.tags.clear();
+        f.untagged = true;
+      });
+    } else if (state.tagCounts.some((t) => t.name === name)) {
+      changeView('tag', () => {
+        f.search = '';
+        f.tags.add(name);
+        f.untagged = false;
+      });
+    } else {
+      flash(`No tag “${name}”`);
+      changeView('search', () => (f.search = ''));
+    }
+    return;
+  }
+  changeView('search', () => {
+    f.search = '';
+    if (!f.queries.includes(text)) f.queries.push(text);
+  });
+}
+
+// Backspace in an empty box: remove the last chip (saved search, then tag).
+function removeLastChip() {
+  const f = state.filter;
+  if (f.queries.length) changeView('search', () => f.queries.pop());
+  else if (f.tags.size) changeView('tag', () => f.tags.delete([...f.tags].pop()));
+  else if (f.untagged) changeView('tag', () => (f.untagged = false));
+}
+
+ui.searchbox.addEventListener('mousedown', (e) => {
+  if (e.target === ui.searchbox || e.target === ui.chips) {
+    e.preventDefault();
+    ui.search.focus();
+  }
+});
+
 function renderSearchScope() {
   const dirs = [...state.filter.dirs];
   const name = (p) => {
     const root = state.folders.find((f) => f.path === p);
     return root ? root.label : p.split('/').pop();
   };
-  ui.search.placeholder = !dirs.length
-    ? 'Search names, folders, tags   /'
-    : dirs.length === 1
-      ? `Search in “${name(dirs[0])}”   /`
-      : `Search in ${dirs.length} folders   /`;
+  const scope = !dirs.length ? '' : dirs.length === 1 ? ` in “${name(dirs[0])}”` : ` in ${dirs.length} folders`;
+  const hasChips = state.filter.queries.length || state.filter.tags.size || state.filter.untagged;
+  ui.search.placeholder = hasChips
+    ? `Add a search${scope}…`
+    : `Search${scope || ' names, folders, tags'}   /  (Enter keeps it, #tag adds a tag)`;
 }
 
 function deselectFolders() {
@@ -577,8 +660,7 @@ function renderFolders() {
   for (const root of roots) addNode(root, 0, false);
 
   ui.folders.scrollTop = scroll;
-  ui.collapse.hidden = !state.expanded.size;
-  ui.clearFolders.hidden = !state.filter.dirs.size;
+  renderFolderChips();
   renderSearchScope();
 }
 
@@ -631,7 +713,8 @@ function renderTags() {
     });
   }
   if (q && !shown) ui.tags.append(el('li', 'hint', 'No tags match'));
-  ui.clearTags.hidden = !(state.filter.tags.size || state.filter.untagged);
+  renderTagChips();
+  renderChips();
 }
 
 // --- rendering: virtualized list ---------------------------------------------
@@ -1664,7 +1747,7 @@ async function revealSample(id, filePath) {
     if (state.editing) cancelEdit();
     clearTimeout(searchTimer);
     ui.search.value = '';
-    state.filter = { search: '', tags: new Set(), untagged: false, dirs: new Set([filePath.slice(0, filePath.lastIndexOf('/'))]) };
+    state.filter = { search: '', queries: [], tags: new Set(), untagged: false, dirs: new Set([filePath.slice(0, filePath.lastIndexOf('/'))]) };
     renderRail();
     await refreshList({ reset: true });
     i = state.rows.findIndex((r) => r.id === id);
@@ -1749,10 +1832,10 @@ function flash(msg) {
 async function randomSample() {
   recordNav('random');
   const f = state.filter;
-  if (f.search || f.tags.size || f.untagged || f.dirs.size) {
+  if (f.search || f.queries.length || f.tags.size || f.untagged || f.dirs.size) {
     if (state.editing) cancelEdit();
     clearTimeout(searchTimer);
-    state.filter = { search: '', tags: new Set(), untagged: false, dirs: new Set() };
+    state.filter = { search: '', queries: [], tags: new Set(), untagged: false, dirs: new Set() };
     ui.search.value = '';
     renderRail();
     await refreshList({ reset: true });
@@ -1793,8 +1876,16 @@ window.addEventListener('keydown', (e) => {
       e.preventDefault();
       move(e.key === 'ArrowDown' ? 1 : -1, e.shiftKey);
     } else if (e.key === 'Enter') {
-      ui.search.blur();
-      if (state.cursor < 0 && state.rows.length) move(1, false);
+      const text = ui.search.value.trim();
+      if (text) {
+        e.preventDefault();
+        commitSearchText(text); // keep focus: type the next one
+      } else {
+        ui.search.blur();
+        if (state.cursor < 0 && state.rows.length) move(1, false);
+      }
+    } else if (e.key === 'Backspace' && !ui.search.value) {
+      removeLastChip();
     } else if (e.key === 'Escape') {
       if (ui.search.value) {
         ui.search.value = '';
@@ -1894,7 +1985,40 @@ ui.foldersMenu.addEventListener('click', () => {
   const r = ui.foldersMenu.getBoundingClientRect();
   window.sm.foldersMenu({ x: r.left, y: r.bottom + 2 }, { expanded: state.expanded.size > 0, selected: state.filter.dirs.size > 0 });
 });
-ui.clearFolders.addEventListener('click', deselectFolders);
+// Active filters, one chip each, under the Folders / Tags headers — visible
+// even with the section collapsed. Click a chip to find it in the sidebar;
+// × removes just that one.
+function dirLabel(p) {
+  const root = state.folders.find((f) => f.path === p);
+  return root ? root.label : p.split('/').pop();
+}
+
+function renderFolderChips() {
+  const chips = [...state.filter.dirs].map((d) => {
+    const c = chip('dir', dirLabel(d), () => changeView('dir', () => state.filter.dirs.delete(d)));
+    c.title = d;
+    c.querySelector('.fchip-label').addEventListener('click', () => revealInSidebar(`${d}/x`));
+    return c;
+  });
+  ui.folderChips.replaceChildren(...chips);
+  ui.folderChips.hidden = !chips.length;
+}
+
+function renderTagChips() {
+  const f = state.filter;
+  const chips = f.untagged
+    ? [chip('tag untagged', 'untagged', () => changeView('tag', () => (f.untagged = false)))]
+    : [...f.tags].map((t) => chip('tag', t, () => changeView('tag', () => f.tags.delete(t)), t));
+  ui.tagChips.replaceChildren(...chips);
+  ui.tagChips.hidden = !chips.length;
+}
+
+function clearTagFilter() {
+  changeView('tag', () => {
+    state.filter.tags.clear();
+    state.filter.untagged = false;
+  });
+}
 
 // Sidebar filter boxes: narrow the folder tree / tag list as you type.
 // Esc clears the box (a second Esc leaves it).
@@ -1953,14 +2077,6 @@ function toggleSection(section, button) {
 ui.foldersToggle.addEventListener('click', () => toggleSection(ui.folderSection, ui.foldersToggle));
 ui.tagsToggle.addEventListener('click', () => toggleSection(ui.tagSection, ui.tagsToggle));
 window.sm.onFoldersCommand((cmd) => (cmd === 'collapse' ? collapseFolders() : deselectFolders()));
-ui.collapse.addEventListener('click', collapseFolders);
-ui.clearTags.addEventListener('click', (e) => {
-  e.stopPropagation();
-  changeView('tag', () => {
-    state.filter.tags.clear();
-    state.filter.untagged = false;
-  });
-});
 
 ui.play.addEventListener('click', togglePlay);
 ui.loop.addEventListener('click', toggleLoop);
