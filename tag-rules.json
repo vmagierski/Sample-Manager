@@ -18,5 +18,6 @@
   { "tag": "one-shot",   "pattern": "one[- _]?shot|(?<![a-z])hits?(?![a-z])" },
   { "tag": "my projects", "folder": "~/Music/Logic" },
   { "tag": "recorded",   "folder": "~/Music/Sample Manager/Recordings" },
-  { "tag": "voice memo", "folder": "~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings" }
+  { "tag": "voice memo", "folder": "~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings" },
+  { "tag": "crop",       "folder": "~/Music/Sample Manager/Crops" }
 ]

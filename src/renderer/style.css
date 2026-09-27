@@ -1,4 +1,5 @@
 :root {
+  --wave-h: 48px; /* player waveform height; set by dragging the grip */
   --bg: #16171b;
   --bg-2: #1d1f24;
   --bg-3: #25282e;
@@ -81,7 +82,7 @@ input[type="search"]:focus, input.tag-input:focus { border-color: var(--accent);
 #body { flex: 1; display: flex; min-height: 0; }
 
 #rail {
-  width: 210px;
+  width: 232px;
   flex: none;
   display: flex;
   flex-direction: column;
@@ -89,8 +90,23 @@ input[type="search"]:focus, input.tag-input:focus { border-color: var(--accent);
   background: var(--bg-2);
   min-height: 0;
 }
-#rail section { padding: 10px 0 6px; }
-#tag-section { flex: 1; min-height: 0; overflow-y: auto; border-top: 1px solid var(--line); }
+#rail section { padding: 10px 0 6px; display: flex; flex-direction: column; min-height: 0; }
+#tag-section { flex: 1; border-top: 1px solid var(--line); }
+#tags { flex: 1; min-height: 0; overflow-y: auto; }
+/* collapsible sections: a collapsed one shrinks to its header, and the other
+   takes the room */
+#rail section.collapsed { flex: none; }
+#rail section.collapsed > ul { display: none; }
+#rail.tags-collapsed #folder-section { flex: 1; }
+#rail.tags-collapsed #folders { max-height: none; flex: 1; }
+#rail h3 .sec-toggle {
+  display: inline-flex; align-items: center; gap: 3px; flex: none; white-space: nowrap;
+  background: none; border: 0; padding: 2px 4px; margin-left: -4px; border-radius: 4px;
+  font: inherit; letter-spacing: inherit; text-transform: inherit; color: inherit; cursor: pointer;
+}
+#rail h3 .sec-toggle:hover { color: var(--fg); background: var(--bg-3); }
+#rail h3 .chev { display: inline-block; width: 10px; font-size: 9px; }
+#rail h3 .more { font-size: 15px; line-height: 1; padding: 0 3px; letter-spacing: 0; }
 #rail h3 {
   display: flex;
   justify-content: space-between;
@@ -101,6 +117,8 @@ input[type="search"]:focus, input.tag-input:focus { border-color: var(--accent);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--fg-dim);
+  white-space: nowrap; /* never wrap the header, however many links show */
+  gap: 8px;
 }
 #rail ul { list-style: none; margin: 0; padding: 0; }
 #rail li {
@@ -121,7 +139,7 @@ input[type="search"]:focus, input.tag-input:focus { border-color: var(--accent);
 #rail li:hover .x { visibility: visible; }
 #rail li .x:hover { color: #ff6b6b; }
 #folders .hint { color: var(--fg-dim); cursor: default; font-size: 12px; }
-#rail h3 .actions { display: flex; gap: 8px; }
+#rail h3 .actions { display: flex; align-items: center; gap: 7px; flex: none; }
 #folders { max-height: 42vh; overflow-y: auto; }
 #rail li.dir { gap: 4px; padding-left: calc(10px + var(--d, 0) * 14px); }
 #rail li.dir .tw { width: 12px; flex: none; text-align: center; font-size: 12px; color: var(--fg-dim); cursor: pointer; }
@@ -190,19 +208,24 @@ input.tag-input { width: 100%; padding: 2px 7px; font-size: 12px; user-select: t
 
 /* player */
 #player {
+  position: relative;
   display: flex;
-  align-items: center;
-  gap: 14px;
-  height: 64px;
-  padding: 0 14px;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 14px 10px;
   background: var(--bg-2);
   border-top: 1px solid var(--line);
 }
-#play { width: 38px; height: 38px; border-radius: 50%; padding: 0; font-size: 14px; }
-#now { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-#now-name { font-size: 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--fg-dim); }
-#wave { width: 100%; height: 30px; display: block; cursor: pointer; }
-#time { color: var(--fg-dim); font-size: 12px; font-variant-numeric: tabular-nums; min-width: 84px; text-align: right; }
+#play { width: 32px; height: 32px; border-radius: 50%; padding: 0; font-size: 13px; }
+/* one toolbar row above a full-width waveform, in groups:
+   transport | now playing | crop + time | listening | capture */
+.player-bar { display: flex; align-items: center; gap: 14px; min-height: 32px; }
+.player-bar .group { display: flex; align-items: center; gap: 10px; flex: none; }
+.player-bar .group + .group, .player-bar #time + .group { padding-left: 14px; border-left: 1px solid var(--line); }
+.vol { display: flex; align-items: center; gap: 6px; color: var(--fg-dim); }
+#now-name { flex: 1; min-width: 0; font-size: 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--fg); }
+#wave { width: 100%; height: var(--wave-h); display: block; cursor: crosshair; }
+#time { flex: none; color: var(--fg-dim); font-size: 12px; font-variant-numeric: tabular-nums; min-width: 96px; text-align: right; }
 .toggle { color: var(--fg-dim); font-size: 12px; display: flex; align-items: center; gap: 5px; }
 #volume { width: 90px; accent-color: var(--accent); }
 
@@ -221,11 +244,27 @@ input.tag-input { width: 100%; padding: 2px 7px; font-size: 12px; user-select: t
 #rec, #recall { font-size: 12px; padding: 4px 9px; white-space: nowrap; }
 #rec.on { background: #5a1f22; border-color: #c0392b; color: #ffd7d3; font-variant-numeric: tabular-nums; }
 
-/* "Folders ▾" header doubles as the folder menu button */
-#rail h3 .head-menu {
-  background: none; border: 0; padding: 2px 4px; margin-left: -4px; border-radius: 4px;
-  font: inherit; letter-spacing: inherit; text-transform: inherit; color: inherit; cursor: pointer;
-}
-#rail h3 .head-menu:hover { color: var(--fg); background: var(--bg-3); }
-#rail h3 .head-menu .caret { font-size: 9px; margin-left: 2px; }
+
 #rail li.empty .name, #rail li.empty .n { opacity: 0.45; }
+
+/* Always takes its space (visibility, not display) so the waveform never
+   changes width mid-drag when a crop appears. */
+#crop-info { display: flex; align-items: center; justify-content: flex-end; gap: 4px; width: 78px; flex: none; color: var(--accent); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+#crop-info.off { visibility: hidden; }
+#rows .row.cropped .c-name::after { content: " ✂"; color: var(--accent); font-size: 11px; }
+
+/* drag handle along the top edge of the player */
+#player-grip { position: absolute; left: 0; right: 0; top: -4px; height: 8px; cursor: ns-resize; z-index: 2; }
+#player-grip:hover { background: linear-gradient(transparent 3px, var(--accent) 3px, var(--accent) 5px, transparent 5px); opacity: 0.6; }
+body.resizing, body.resizing * { cursor: ns-resize !important; }
+
+/* on/off icon button (Loop) */
+/* on/off icon button (Loop): just the icon — dim when off, orange when on */
+.icon-toggle { width: 28px; height: 28px; padding: 0; display: grid; place-items: center; background: none; border: 0; color: #5d626d; }
+.icon-toggle:hover { color: var(--fg); border: 0; }
+.icon-toggle.on { color: var(--accent); filter: drop-shadow(0 0 4px rgba(255, 170, 60, 0.45)); }
+.icon-toggle.on:hover { color: #ffc070; }
+
+/* "Show in Sidebar" highlight */
+@keyframes sidebar-flash { from { background: rgba(255, 170, 60, 0.45); } to { background: transparent; } }
+#rail li.flash { animation: sidebar-flash 1.6s ease-out; }

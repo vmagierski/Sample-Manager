@@ -136,4 +136,81 @@ async function readPlayable(filePath) {
   return buf;
 }
 
-module.exports = { readPlayable, aiffToWav, readExtended };
+// --- cropping ---------------------------------------------------------------------
+
+// Locate the fmt and data chunks of a RIFF/WAVE file.
+function parseWav(buf) {
+  if (buf.toString('ascii', 0, 4) !== 'RIFF' || buf.toString('ascii', 8, 12) !== 'WAVE') throw new Error('not a WAV file');
+  let fmt = null;
+  let data = null;
+  let off = 12;
+  while (off + 8 <= buf.length) {
+    const id = buf.toString('ascii', off, off + 4);
+    const size = buf.readUInt32LE(off + 4);
+    const body = off + 8;
+    if (id === 'fmt ') fmt = buf.subarray(body, body + size);
+    else if (id === 'data') {
+      data = { start: body, len: Math.min(size, buf.length - body) };
+      if (fmt) break;
+    }
+    off = body + size + (size & 1);
+  }
+  if (!fmt || !data) throw new Error('WAV missing fmt or data chunk');
+  return {
+    fmt, // copied verbatim, so WAVE_FORMAT_EXTENSIBLE etc. survive
+    channels: fmt.readUInt16LE(2),
+    rate: fmt.readUInt32LE(4),
+    blockAlign: fmt.readUInt16LE(12),
+    dataStart: data.start,
+    frames: Math.floor(data.len / fmt.readUInt16LE(12)),
+  };
+}
+
+function chunk(id, body) {
+  const head = Buffer.alloc(8);
+  head.write(id, 0, 'ascii');
+  head.writeUInt32LE(body.length, 4);
+  return body.length & 1 ? [head, body, Buffer.alloc(1)] : [head, body];
+}
+
+// Cut [startSec, endSec) out of a WAV, keeping its exact format (no re-encode).
+function sliceWav(buf, startSec, endSec) {
+  const w = parseWav(buf);
+  const f0 = Math.max(0, Math.min(w.frames, Math.floor(startSec * w.rate)));
+  const f1 = Math.max(f0, Math.min(w.frames, Math.ceil(endSec * w.rate)));
+  const data = buf.subarray(w.dataStart + f0 * w.blockAlign, w.dataStart + f1 * w.blockAlign);
+  const body = Buffer.concat([Buffer.from('WAVE'), ...chunk('fmt ', w.fmt), ...chunk('data', data)]);
+  const head = Buffer.alloc(8);
+  head.write('RIFF', 0, 'ascii');
+  head.writeUInt32LE(body.length, 4);
+  return Buffer.concat([head, body]);
+}
+
+function afconvert(args) {
+  return new Promise((resolve, reject) => {
+    execFile('/usr/bin/afconvert', args, (err, _o, stderr) =>
+      err ? reject(new Error(`afconvert failed: ${stderr || err.message}`)) : resolve());
+  });
+}
+
+// Any supported sample as WAV at its original sample rate: WAV as-is, AIFF
+// rewrapped losslessly, everything else (CAF, MP3, M4A, FLAC) decoded by
+// macOS to 24-bit PCM.
+async function toWav(filePath) {
+  const ext = path.extname(filePath).slice(1).toLowerCase();
+  if (ext === 'wav' || ext === 'wave') return fs.promises.readFile(filePath);
+  if (ext === 'aif' || ext === 'aiff' || ext === 'aifc') return aiffToWav(await fs.promises.readFile(filePath));
+  const out = path.join(os.tmpdir(), `sm-crop-${process.pid}-${++tmpSeq}.wav`);
+  try {
+    await afconvert(['-f', 'WAVE', '-d', 'LEI24', filePath, out]);
+    return await fs.promises.readFile(out);
+  } finally {
+    fs.promises.unlink(out).catch(() => {});
+  }
+}
+
+async function cropToWav(filePath, startSec, endSec) {
+  return sliceWav(await toWav(filePath), startSec, endSec);
+}
+
+module.exports = { readPlayable, aiffToWav, readExtended, parseWav, sliceWav, cropToWav };

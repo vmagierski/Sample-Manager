@@ -6,6 +6,7 @@ const scanner = require('./scanner');
 const drag = require('./drag');
 const { LibraryWatcher } = require('./watcher');
 const { readPlayable } = require('./audio');
+const crop = require('./crop');
 
 // Same library for `npm start` and the installed .app (whose productName would
 // otherwise give it a different userData folder). Override for a throwaway
@@ -188,6 +189,8 @@ function registerIpc() {
     return tagsOut;
   });
   ipcMain.handle('sample:duration', (_e, id, ms) => db.setDuration(id, ms));
+  ipcMain.handle('crop:prepare', (_e, id, start, end) => crop.prepare(id, +start, +end));
+  ipcMain.handle('crop:clear', (_e, id) => crop.clear(id));
   ipcMain.handle('sample:read', async (_e, id) => {
     const row = db.getById(id);
     if (!row) throw new Error('unknown sample');
@@ -274,6 +277,7 @@ function sampleMenu(sender, ids) {
       label: many ? `Copy ${rows.length} Paths` : 'Copy Path',
       click: () => clipboard.writeText(rows.map((r) => r.path).join('\n')),
     },
+    { label: 'Show in Sidebar', click: () => sender.send('ui:showInSidebar', rows[0].path) },
     { type: 'separator' },
     { label: 'Edit Tags…', enabled: !many, click: () => sender.send('ui:editTags', rows[0].id) },
   ]).popup({ window: BrowserWindow.fromWebContents(sender) });
@@ -425,6 +429,7 @@ app.on('before-quit', (e) => {
   if (quitting) return;
   quitting = true;
   e.preventDefault();
+  crop.clearAll();
   Promise.resolve(watcher && watcher.closeAll())
     .catch(() => {})
     .finally(() => {

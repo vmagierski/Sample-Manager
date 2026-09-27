@@ -20,6 +20,11 @@ const ui = {
   flash: $('#flash'),
   fwd: $('#fwd'),
   foldersMenu: $('#folders-menu'),
+  rail: $('#rail'),
+  folderSection: $('#folder-section'),
+  tagSection: $('#tag-section'),
+  foldersToggle: $('#folders-toggle'),
+  tagsToggle: $('#tags-toggle'),
   clearFolders: $('#clear-folders'),
   search: $('#search'),
   status: $('#status'),
@@ -35,6 +40,11 @@ const ui = {
   play: $('#play'),
   nowName: $('#now-name'),
   wave: $('#wave'),
+  loop: $('#loop'),
+  grip: $('#player-grip'),
+  cropInfo: $('#crop-info'),
+  cropLen: $('#crop-len'),
+  cropClear: $('#crop-clear'),
   time: $('#time'),
   autoplay: $('#autoplay'),
   volume: $('#volume'),
@@ -255,18 +265,13 @@ function renderEmpty() {
 
 // --- folder tree -------------------------------------------------------------
 
+// Opened folders last for the session only: every launch starts with just the
+// top-level folders showing (and no filters).
 function loadExpanded() {
   try {
-    return new Set(JSON.parse(localStorage.getItem('sm.expanded') || '[]'));
-  } catch {
-    return new Set();
-  }
-}
-
-function saveExpanded() {
-  try {
-    localStorage.setItem('sm.expanded', JSON.stringify([...state.expanded]));
+    localStorage.removeItem('sm.expanded'); // from builds that remembered it
   } catch {}
+  return new Set();
 }
 
 // Builds state.tree from state.folders + state.dirs; returns the set of all node paths.
@@ -331,7 +336,6 @@ function deselectFolders() {
 
 function collapseFolders() {
   state.expanded.clear();
-  saveExpanded();
   renderFolders();
 }
 
@@ -348,6 +352,7 @@ function renderFolders() {
     const open = expandable && state.expanded.has(node.path);
     const li = el('li', `dir${state.filter.dirs.has(node.path) ? ' on' : ''}${hidden ? ' hidden-dir' : ''}`);
     li.style.setProperty('--d', depth);
+    li.dataset.path = node.path;
     li.title = hidden ? `${node.path}\nHidden — right-click to unhide` : node.path;
     const tw = el('span', 'tw', expandable ? (open ? '▾' : '▸') : '');
     li.append(tw, el('span', 'name', node.name), el('span', 'n', (hidden ? node.total : node.n).toLocaleString()));
@@ -368,8 +373,7 @@ function renderFolders() {
       if (!expandable) return;
       if (open) state.expanded.delete(node.path);
       else state.expanded.add(node.path);
-      saveExpanded();
-      renderFolders();
+          renderFolders();
     });
     // Click: just this folder (click again to deselect). ⇧/⌘-click: add/remove it.
     li.addEventListener('click', (e) => {
@@ -520,6 +524,7 @@ function updateRowClasses() {
     e.classList.toggle('sel', state.selected.has(id));
     e.classList.toggle('cursor', i === state.cursor);
     e.classList.toggle('playing', id === playingId);
+    e.classList.toggle('cropped', player.regions.has(id));
   }
 }
 
@@ -650,8 +655,8 @@ ui.rows.addEventListener('dragstart', (e) => {
   e.preventDefault();
   if (!row) return;
   pendingCollapse = -1;
-  const paths = actionRows(+row.dataset.i).map((r) => r.path);
-  window.sm.startDrag(paths);
+  // Ids, not paths: main swaps in the cropped file for samples with a region.
+  window.sm.startDrag(actionRows(+row.dataset.i).map((r) => r.id));
 });
 
 // --- tag editing ---------------------------------------------------------------------
@@ -730,6 +735,10 @@ const player = {
   req: 0,
   cache: new Map(), // id -> AudioBuffer (insertion order = LRU)
   peaks: new WeakMap(),
+  view: null, // zoomed waveform window { start, end } (seconds), or null = whole file
+  loop: false, // see the loop section: on with a region, off by default
+  loopSpan: null,
+  regions: new Map(), // crop regions this session: sample id -> { start, end } (seconds)
   error: null,
 };
 
@@ -776,13 +785,31 @@ function stopSource() {
 
 function position() {
   if (!player.buf) return 0;
-  return player.playing ? player.ctx.currentTime - player.startTime : player.offset;
+  if (!player.playing) return player.offset;
+  let t = player.ctx.currentTime - player.startTime;
+  if (player.loopSpan) {
+    const [a, b] = player.loopSpan;
+    if (t >= b) t = a + ((t - a) % (b - a));
+  }
+  return t;
+}
+
+// The playable span: the crop region if the loaded sample has one, else all of it.
+function curRegion() {
+  return (player.row && player.regions.get(player.row.id)) || null;
+}
+
+function span() {
+  const reg = curRegion();
+  return reg ? [reg.start, reg.end] : [0, player.buf ? player.buf.duration : 0];
 }
 
 function startAt(offset) {
   const ctx = audioCtx();
   if (ctx.state === 'suspended') ctx.resume();
   stopSource();
+  const [s0, s1] = span();
+  if (!(offset >= s0 && offset < s1 - 0.001)) offset = s0; // outside the span, or at its end: from the top
   const src = ctx.createBufferSource();
   src.buffer = player.buf;
   src.connect(player.bus);
@@ -790,10 +817,20 @@ function startAt(offset) {
     if (player.src !== src) return;
     player.src = null;
     player.playing = false;
-    player.offset = 0;
+    player.offset = s0;
     renderPlayer();
   };
-  src.start(0, offset);
+  // Loop the span: the crop region if there is one, else the whole sample.
+  const looping = player.loop;
+  if (looping) {
+    src.loop = true;
+    src.loopStart = s0;
+    src.loopEnd = s1;
+    src.start(0, offset);
+  } else {
+    src.start(0, offset, s1 - offset);
+  }
+  player.loopSpan = looping ? [s0, s1] : null;
   player.src = src;
   player.startTime = ctx.currentTime - offset;
   player.playing = true;
@@ -807,6 +844,8 @@ async function playRow(row, from = 0) {
   player.playing = false;
   player.row = row;
   player.buf = null;
+  player.view = null;
+  setLoop(player.regions.has(row.id));
   player.offset = 0;
   player.error = null;
   renderPlayer();
@@ -846,7 +885,7 @@ function togglePlay() {
   if (!player.row) return;
   if (player.playing) return pause();
   if (!player.buf) return playRow(player.row);
-  startAt(player.offset >= player.buf.duration ? 0 : player.offset);
+  startAt(player.offset); // startAt wraps to the span start when at its end
 }
 
 function stopPlayback() {
@@ -859,7 +898,10 @@ function stopPlayback() {
 
 function seek(frac) {
   if (!player.buf) return;
-  const t = clamp(frac, 0, 1) * player.buf.duration;
+  seekTo(clamp(frac, 0, 1) * player.buf.duration);
+}
+
+function seekTo(t) {
   if (player.playing) startAt(t);
   else {
     player.offset = t;
@@ -878,10 +920,37 @@ function renderPlayer() {
   ui.nowName.textContent = player.error || (player.row ? player.row.relPath : 'Nothing playing');
   const dur = player.buf ? player.buf.duration : 0;
   ui.time.textContent = `${fmtTime(position())} / ${fmtTime(dur)}`;
+  const reg = curRegion();
+  ui.cropInfo.classList.toggle('off', !reg);
+  if (reg) ui.cropLen.textContent = `✂ ${(reg.end - reg.start).toFixed(2)}s`;
   drawWave();
 }
 
-// --- waveform -------------------------------------------------------------------------
+// --- waveform ---------------------------------------------------------------------------
+//
+// The waveform shows a *view* of the loaded sample: the whole file, or a
+// zoomed-in window (⌥-scroll to zoom, horizontal scroll to pan). All mouse ↔
+// time mapping goes through viewSpan().
+
+const ZOOM_PER_PX = 0.0012; // ⌥-scroll sensitivity: a mouse-wheel notch (~100px) ≈ 13%
+const MIN_VIEW_S = 0.05; // deepest zoom: 50ms across the whole waveform…
+const MAX_ZOOM = 100; // …or 1/100 of the file, whichever is longer
+
+function viewSpan() {
+  const dur = player.buf ? player.buf.duration : 0;
+  return player.view ? [player.view.start, player.view.end] : [0, dur];
+}
+
+function setView(start, end) {
+  const dur = player.buf.duration;
+  const span = end - start;
+  if (span >= dur - 1e-6) player.view = null;
+  else {
+    const s = clamp(start, 0, dur - span);
+    player.view = { start: s, end: s + span };
+  }
+  drawWave();
+}
 
 function sizeWave() {
   const dpr = window.devicePixelRatio || 1;
@@ -890,19 +959,23 @@ function sizeWave() {
   drawWave();
 }
 
-function peaksFor(buf, width) {
+// Min/max per pixel column for the current view; cached until the view or
+// canvas width changes (not per frame while playing).
+function peaksFor(buf, width, v0, v1) {
+  const key = `${width}|${v0}|${v1}`;
   const cached = player.peaks.get(buf);
-  if (cached && cached.width === width) return cached.data;
+  if (cached && cached.key === key) return cached.data;
   const data = new Float32Array(width * 2);
   const chans = [];
   for (let c = 0; c < buf.numberOfChannels; c++) chans.push(buf.getChannelData(c));
-  const per = buf.length / width;
+  const a0 = v0 * buf.sampleRate;
+  const per = ((v1 - v0) * buf.sampleRate) / width;
   for (let x = 0; x < width; x++) {
     let lo = 0;
     let hi = 0;
-    const a = Math.floor(x * per);
-    const b = Math.max(a + 1, Math.floor((x + 1) * per));
-    const step = Math.max(1, Math.floor((b - a) / 256)); // subsample long buffers
+    const a = Math.floor(a0 + x * per);
+    const b = Math.max(a + 1, Math.floor(a0 + (x + 1) * per));
+    const step = Math.max(1, Math.floor((b - a) / 256)); // subsample long spans
     for (const ch of chans) {
       for (let i = a; i < b && i < ch.length; i += step) {
         const v = ch[i];
@@ -913,7 +986,7 @@ function peaksFor(buf, width) {
     data[x * 2] = lo;
     data[x * 2 + 1] = hi;
   }
-  player.peaks.set(buf, { width, data });
+  player.peaks.set(buf, { key, data });
   return data;
 }
 
@@ -927,20 +1000,293 @@ function drawWave() {
     g.fillRect(0, mid, c.width, 1);
     return;
   }
-  const peaks = peaksFor(player.buf, c.width);
-  const played = (position() / player.buf.duration) * c.width;
-  for (let x = 0; x < c.width; x++) {
+  // While playing zoomed in, page the view along with the playhead — except
+  // when looping: then the view stays where you zoomed, even if the loop
+  // runs outside it.
+  let [v0, v1] = viewSpan();
+  const pos = position();
+  if (player.view && player.playing && !player.loopSpan && (pos < v0 || pos > v1)) {
+    setView(pos, pos + (v1 - v0));
+    return; // setView redraws
+  }
+  const W = c.width;
+  const xOf = (t) => ((t - v0) / (v1 - v0)) * W;
+  const peaks = peaksFor(player.buf, W, v0, v1);
+  const played = xOf(pos);
+  const reg = curRegion();
+  const x0 = reg ? xOf(reg.start) : -Infinity;
+  const x1 = reg ? xOf(reg.end) : Infinity;
+  if (reg) {
+    g.fillStyle = 'rgba(255, 170, 60, 0.13)';
+    g.fillRect(x0, 0, x1 - x0, c.height);
+  }
+  for (let x = 0; x < W; x++) {
     const lo = peaks[x * 2];
     const hi = peaks[x * 2 + 1];
-    g.fillStyle = x < played ? '#ffaa3c' : '#4a4f5a';
+    const inside = x >= x0 && x < x1;
+    g.fillStyle = !inside ? '#2f333b' : x < played ? '#ffaa3c' : '#4a4f5a';
     g.fillRect(x, mid - hi * mid, 1, Math.max(1, (hi - lo) * mid));
+  }
+  const dpr = window.devicePixelRatio || 1;
+  if (reg) {
+    g.fillStyle = '#ffaa3c';
+    g.fillRect(x0, 0, 2 * dpr, c.height);
+    g.fillRect(x1 - 2 * dpr, 0, 2 * dpr, c.height);
+  }
+  if (player.view) {
+    // Where the view sits in the whole file: a thin bar along the bottom.
+    const dur = player.buf.duration;
+    g.fillStyle = 'rgba(255, 255, 255, 0.08)';
+    g.fillRect(0, c.height - 3 * dpr, W, 3 * dpr);
+    g.fillStyle = 'rgba(255, 170, 60, 0.6)';
+    g.fillRect((v0 / dur) * W, c.height - 3 * dpr, Math.max(2 * dpr, ((v1 - v0) / dur) * W), 3 * dpr);
   }
 }
 
-ui.wave.addEventListener('mousedown', (e) => {
+ui.wave.addEventListener(
+  'wheel',
+  (e) => {
+    if (!player.buf) return;
+    const [v0, v1] = viewSpan();
+    const span = v1 - v0;
+    const dur = player.buf.duration;
+    if (e.altKey) {
+      // ⌥-scroll (either axis) zooms around the mouse. Deltas are clamped so a
+      // fast trackpad flick can't jump from full view to max zoom at once.
+      e.preventDefault();
+      const delta = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+      const minSpan = Math.min(dur, Math.max(MIN_VIEW_S, dur / MAX_ZOOM));
+      const next = clamp(span * Math.exp(clamp(delta, -120, 120) * ZOOM_PER_PX), minSpan, dur);
+      const t = waveTime(e.clientX);
+      const frac = (t - v0) / span;
+      setView(t - frac * next, t - frac * next + next);
+    } else if (player.view && Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+      // Plain horizontal scroll pans when zoomed in.
+      e.preventDefault();
+      const w = ui.wave.getBoundingClientRect().width;
+      setView(v0 + (e.deltaX / w) * span, v1 + (e.deltaX / w) * span);
+    }
+  },
+  { passive: false },
+);
+
+// --- crop regions ------------------------------------------------------------------------
+//
+// On the waveform: drag outside the region to select a new one, drag its edges
+// to resize, drag inside it to move it, click to seek, double-click to clear.
+// I / O set start / end at the playhead. A region limits (and, with Loop on,
+// loops) playback, and dragging the sample out drags just that part — main
+// renders the cropped file as soon as the region is set, so drags are instant.
+
+const EDGE_PX = 6;
+let waveDrag = null;
+
+function waveTime(clientX) {
   const rect = ui.wave.getBoundingClientRect();
-  seek((e.clientX - rect.left) / rect.width);
+  const [v0, v1] = viewSpan();
+  return clamp(v0 + ((clientX - rect.left) / rect.width) * (v1 - v0), 0, player.buf.duration);
+}
+
+// What's under the mouse: a region edge, the region body, or empty wave.
+function hitTest(clientX) {
+  const reg = curRegion();
+  if (!reg) return { part: 'wave' };
+  const [v0, v1] = viewSpan();
+  const px = ui.wave.getBoundingClientRect().width / (v1 - v0);
+  const t = waveTime(clientX);
+  if (Math.abs(t - reg.start) * px <= EDGE_PX) return { part: 'edge', other: reg.end };
+  if (Math.abs(t - reg.end) * px <= EDGE_PX) return { part: 'edge', other: reg.start };
+  if (t > reg.start && t < reg.end) return { part: 'body' };
+  return { part: 'wave' };
+}
+
+// While a region loops, move the playing loop points to `reg` in place, so an
+// edge drag or move is heard immediately (and without restarting) — as long as
+// the playhead is inside the new region (else it wraps to the region start).
+// Returns false if nothing is looping.
+function liveLoop(reg) {
+  if (!player.playing || !player.src || !player.loopSpan) return false;
+  const p = position();
+  if (!(p >= reg.start && p < reg.end)) {
+    // e.g. the end was dragged to before the playhead: wrap to the start now.
+    startAt(reg.start);
+    return true;
+  }
+  player.src.loopStart = reg.start;
+  player.src.loopEnd = reg.end;
+  // Re-anchor position() to the new span.
+  player.startTime = player.ctx.currentTime - p;
+  player.loopSpan = [reg.start, reg.end];
+  return true;
+}
+
+function commitRegion(start, end) {
+  const row = player.row;
+  if (!row || !player.buf) return;
+  if (end - start < 0.01) return clearRegion();
+  const reg = { start: Math.max(0, start), end: Math.min(player.buf.duration, end) };
+  player.regions.set(row.id, reg);
+  setLoop(true);
+  window.sm.prepareCrop(row.id, reg.start, reg.end).catch((err) => {
+    console.error(err);
+    if (player.regions.get(row.id) === reg) flash(`Can't crop ${row.format.toUpperCase()} files — dragging will use the whole sample`);
+  });
+  updateRowClasses();
+  // Already looping and the playhead is inside: keep going with the new loop
+  // points. Otherwise audition the crop from its start.
+  if (!liveLoop(reg)) startAt(reg.start);
+  renderPlayer();
+}
+
+function clearRegion() {
+  const row = player.row;
+  if (!row || !player.regions.has(row.id)) return;
+  player.regions.delete(row.id);
+  window.sm.clearCrop(row.id);
+  setLoop(false);
+  updateRowClasses();
+  if (player.playing) startAt(position()); // drop the loop points, keep playing
+  else renderPlayer();
+}
+
+function onWaveMove(e) {
+  const d = waveDrag;
+  if (!d || (!d.moved && Math.abs(e.clientX - d.x0) < 3)) return;
+  d.moved = true;
+  const t = waveTime(e.clientX);
+  let reg;
+  if (d.part === 'body') {
+    // Move, keeping the length, stopping at the file's ends.
+    const len = d.orig.end - d.orig.start;
+    const start = clamp(d.orig.start + (t - d.grab), 0, player.buf.duration - len);
+    reg = { start, end: start + len };
+  } else {
+    reg = { start: Math.min(t, d.fixed), end: Math.max(t, d.fixed) };
+  }
+  // Live preview while dragging (heard live if it's looping); committed — and
+  // rendered to a file by main — on mouseup.
+  player.regions.set(player.row.id, reg);
+  liveLoop(reg);
+  drawWave();
+}
+
+function onWaveUp(e) {
+  window.removeEventListener('mousemove', onWaveMove);
+  const d = waveDrag;
+  waveDrag = null;
+  if (!d || !player.buf) return;
+  if (d.moved) {
+    const r = player.regions.get(player.row.id);
+    return commitRegion(r.start, r.end);
+  }
+  // A click, not a drag: seek there (clicking outside the region clears it).
+  const t = waveTime(e.clientX);
+  if (d.part === 'wave' && curRegion()) clearRegion();
+  seekTo(t);
+}
+
+ui.wave.addEventListener('mousedown', (e) => {
+  if (e.button !== 0 || !player.buf) return;
+  e.preventDefault();
+  const hit = hitTest(e.clientX);
+  const t = waveTime(e.clientX);
+  waveDrag = { part: hit.part, x0: e.clientX, moved: false };
+  if (hit.part === 'edge') waveDrag.fixed = hit.other;
+  else if (hit.part === 'body') Object.assign(waveDrag, { grab: t, orig: { ...curRegion() } });
+  else waveDrag.fixed = t;
+  window.addEventListener('mousemove', onWaveMove);
+  window.addEventListener('mouseup', onWaveUp, { once: true });
 });
+ui.wave.addEventListener('mousemove', (e) => {
+  if (waveDrag || !player.buf) return;
+  const part = hitTest(e.clientX).part;
+  ui.wave.style.cursor = part === 'edge' ? 'ew-resize' : part === 'body' ? 'grab' : 'crosshair';
+});
+ui.wave.addEventListener('dblclick', clearRegion);
+
+// I / O: set the region start / end at the playhead.
+function setRegionEdge(which) {
+  if (!player.buf) return;
+  const t = position();
+  const reg = curRegion() || { start: 0, end: player.buf.duration };
+  let { start, end } = reg;
+  if (which === 'in') {
+    start = t;
+    if (end <= start) end = player.buf.duration;
+  } else {
+    end = t;
+    if (end <= start) start = 0;
+  }
+  commitRegion(start, end);
+}
+
+// --- loop --------------------------------------------------------------------------------
+
+// Loop is off by default. Selecting a region turns it on; clearing it turns it
+// off; moving to another sample resets it (on if that sample has a region).
+// The button overrides any of that for the current sample — on with no region
+// loops the whole sample.
+function setLoop(on) {
+  player.loop = on;
+  renderLoop();
+}
+
+function toggleLoop() {
+  setLoop(!player.loop);
+  if (player.playing) startAt(position()); // apply to what's playing now
+}
+
+function renderLoop() {
+  ui.loop.classList.toggle('on', player.loop);
+  ui.loop.setAttribute('aria-pressed', String(player.loop));
+  ui.loop.title = `Loop: ${player.loop ? 'on' : 'off'} (L)`;
+}
+
+// --- resizable player -----------------------------------------------------------------------
+
+const WAVE_MIN = 40;
+
+function setWaveHeight(h) {
+  const max = Math.max(WAVE_MIN, Math.round(window.innerHeight * 0.6));
+  const px = clamp(Math.round(h), WAVE_MIN, max);
+  document.documentElement.style.setProperty('--wave-h', `${px}px`);
+  return px;
+}
+
+(() => {
+  try {
+    const saved = +localStorage.getItem('sm.waveH');
+    if (saved) setWaveHeight(saved);
+  } catch {}
+})();
+
+ui.grip.addEventListener('mousedown', (e) => {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  const y0 = e.clientY;
+  const h0 = ui.wave.clientHeight;
+  document.body.classList.add('resizing');
+  const move = (ev) => setWaveHeight(h0 + (y0 - ev.clientY)); // drag up = taller
+  window.addEventListener('mousemove', move);
+  window.addEventListener(
+    'mouseup',
+    () => {
+      window.removeEventListener('mousemove', move);
+      document.body.classList.remove('resizing');
+      try {
+        localStorage.setItem('sm.waveH', String(ui.wave.clientHeight));
+      } catch {}
+    },
+    { once: true },
+  );
+});
+ui.grip.addEventListener('dblclick', () => {
+  document.documentElement.style.removeProperty('--wave-h'); // back to the CSS default
+  try {
+    localStorage.removeItem('sm.waveH');
+  } catch {}
+});
+new ResizeObserver(sizeWave).observe(ui.wave);
 
 // --- keyboard ---------------------------------------------------------------------------
 
@@ -1263,6 +1609,17 @@ window.addEventListener('keydown', (e) => {
       ui.search.focus();
       ui.search.select();
       break;
+    case 'l':
+      if (mod) return;
+      e.preventDefault();
+      toggleLoop();
+      break;
+    case 'i':
+    case 'o':
+      if (mod) return;
+      e.preventDefault();
+      setRegionEdge(e.key === 'i' ? 'in' : 'out');
+      break;
     case 'r':
       if (mod) return;
       e.preventDefault();
@@ -1302,6 +1659,42 @@ ui.foldersMenu.addEventListener('click', () => {
   window.sm.foldersMenu({ x: r.left, y: r.bottom + 2 }, { expanded: state.expanded.size > 0, selected: state.filter.dirs.size > 0 });
 });
 ui.clearFolders.addEventListener('click', deselectFolders);
+
+// "Show in Sidebar": open the tree down to a sample's folder, scroll to it and
+// flash it. Doesn't touch filters. Stops at a hidden folder (can't be opened).
+function revealInSidebar(filePath) {
+  const dir = filePath.slice(0, filePath.lastIndexOf('/'));
+  const root = state.tree.find((r) => dir === r.path || dir.startsWith(r.path + '/'));
+  if (!root) return;
+  let node = root;
+  const segs = dir === root.path ? [] : dir.slice(root.path.length + 1).split('/');
+  for (const seg of segs) {
+    const kid = node.kids.get(seg);
+    if (!kid || state.hidden.has(node.path)) break;
+    state.expanded.add(node.path);
+    node = kid;
+  }
+  if (ui.folderSection.classList.contains('collapsed')) toggleSection(ui.folderSection, ui.foldersToggle);
+  renderFolders();
+  const li = [...ui.folders.children].find((l) => l.dataset.path === node.path);
+  if (!li) return;
+  li.scrollIntoView({ block: 'center' });
+  li.classList.remove('flash');
+  void li.offsetWidth; // restart the animation if it's already flashing
+  li.classList.add('flash');
+}
+window.sm.onShowInSidebar(revealInSidebar);
+
+// Sidebar sections collapse to their header; the other one takes the room.
+// Session-only: both are open at launch.
+function toggleSection(section, button) {
+  const collapsed = section.classList.toggle('collapsed');
+  button.setAttribute('aria-expanded', String(!collapsed));
+  button.querySelector('.chev').textContent = collapsed ? '▸' : '▾';
+  ui.rail.classList.toggle('tags-collapsed', ui.tagSection.classList.contains('collapsed'));
+}
+ui.foldersToggle.addEventListener('click', () => toggleSection(ui.folderSection, ui.foldersToggle));
+ui.tagsToggle.addEventListener('click', () => toggleSection(ui.tagSection, ui.tagsToggle));
 window.sm.onFoldersCommand((cmd) => (cmd === 'collapse' ? collapseFolders() : deselectFolders()));
 ui.collapse.addEventListener('click', collapseFolders);
 ui.clearTags.addEventListener('click', (e) => {
@@ -1313,8 +1706,10 @@ ui.clearTags.addEventListener('click', (e) => {
 });
 
 ui.play.addEventListener('click', togglePlay);
+ui.loop.addEventListener('click', toggleLoop);
 ui.back.addEventListener('click', () => goNav(-1));
 ui.random.addEventListener('click', randomSample);
+ui.cropClear.addEventListener('click', clearRegion);
 ui.rec.addEventListener('click', toggleRecording);
 ui.recall.addEventListener('click', recall);
 ui.fwd.addEventListener('click', () => goNav(1));
@@ -1349,5 +1744,6 @@ window.sm.onScanStatus(({ busy, label }) => {
 });
 
 sizeWave();
+renderLoop();
 renderNav();
 refreshAll();

@@ -29,15 +29,20 @@ The library DB lives in `~/Library/Application Support/sample-manager/library.db
 | / or ⌘F | Search (↑/↓ still move the list while typing) |
 | ⌘A | Select all visible |
 | Esc | Stop |
+| I / O | Set crop start / end at the playhead |
+| L | Loop on / off |
+| ⌥-scroll on the waveform | Zoom in / out (horizontal scroll pans while zoomed) |
 | ⌘[ / ⌘] (or mouse side buttons, or ‹ › in the header) | Back / forward to previous places — filters, selected sample and scroll position |
 | ⌥⌘R | Show current sample in Finder |
 | ⌘O / ⇧⌘R | Add folder / rescan library (reloads `tag-rules.json`) |
 
-Click a folder (or any subfolder via ▸) in the sidebar to show only what is below it; ⇧/⌘-click to select several. Search looks inside the selected folders (the search box says so); "clear" deselects them, "collapse" closes the tree. Click the **Folders ▾** header to add a folder or rescan. Right-click a folder to hide it (struck through; right-click again to unhide).
+Click a folder (or any subfolder via ▸) in the sidebar to show only what is below it; ⇧/⌘-click to select several. Search looks inside the selected folders (the search box says so); "clear" deselects them, "collapse" closes the tree. The **⋯** next to Folders adds a folder or rescans; click the **Folders** / **Tags** headers to collapse either section. Each launch starts with only top-level folders open and no filters. Right-click a folder to hide it (struck through; right-click again to unhide).
+
+**Crop:** drag across the player waveform to select part of a sample (drag the edges to resize, drag inside to move it, click outside or double-click to clear). Drag the top edge of the player to make the waveform taller. Playback stays inside the crop and **Loop** switches on (it's off by default; on without a crop it loops the whole sample), the row gets a ✂, and dragging the sample into your DAW drags just that part — a WAV saved to `~/Music/Sample Manager/Crops` (tagged *crop*). WAV/AIFF crops are cut losslessly in the original format; other formats become 24-bit WAV. Crops last for the session.
 
 **R** or ⤮ Random plays a random sample from the whole library. **● Rec** records what plays; **⟲ Last 10s** saves the last 10 seconds you heard. Both save 24-bit WAVs to `~/Music/Sample Manager/Recordings` by default (created and added to the library on first launch).
 
-Click selects and auditions; ⌘-click / Shift-click multi-select; click a row's tag cell to edit. Drag any row (or the whole selection) into your DAW. Right-click a sample for Show in Finder / Copy Path / Edit Tags, or a sidebar folder for Show in Finder.
+Click selects and auditions; ⌘-click / Shift-click multi-select; click a row's tag cell to edit. Drag any row (or the whole selection) into your DAW. Right-click a sample for Show in Finder / Copy Path / Show in Sidebar / Edit Tags, or a sidebar folder for Show in Finder.
 
 ## Tagging
 

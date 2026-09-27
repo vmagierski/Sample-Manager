@@ -60,3 +60,43 @@ test('AIFC sowt is already little-endian', () => {
   // Builder wrote big-endian bytes 01 02; sowt means they're passed through untouched.
   assert.deepStrictEqual([...wav.subarray(44, 46)], [0x01, 0x02]);
 });
+
+const { sliceWav, parseWav } = require('../src/main/audio');
+
+function wav16(rate, channels, samples) {
+  const data = Buffer.alloc(samples.length * 2);
+  samples.forEach((v, i) => data.writeInt16LE(v, i * 2));
+  const h = Buffer.alloc(44);
+  h.write('RIFF', 0, 'ascii'); h.writeUInt32LE(36 + data.length, 4); h.write('WAVE', 8, 'ascii');
+  h.write('fmt ', 12, 'ascii'); h.writeUInt32LE(16, 16); h.writeUInt16LE(1, 20); h.writeUInt16LE(channels, 22);
+  h.writeUInt32LE(rate, 24); h.writeUInt32LE(rate * channels * 2, 28); h.writeUInt16LE(channels * 2, 32); h.writeUInt16LE(16, 34);
+  h.write('data', 36, 'ascii'); h.writeUInt32LE(data.length, 40);
+  return Buffer.concat([h, data]);
+}
+
+test('sliceWav cuts whole frames and keeps the format', () => {
+  // 10 stereo frames at 10 Hz = 1s; frame i has L = i, R = -i
+  const src = wav16(10, 2, Array.from({ length: 10 }, (_, i) => [i, -i]).flat());
+  const out = sliceWav(src, 0.2, 0.5);
+  const w = parseWav(out);
+  assert.strictEqual(w.rate, 10);
+  assert.strictEqual(w.channels, 2);
+  assert.strictEqual(w.frames, 3);
+  assert.deepStrictEqual([0, 1, 2].map((f) => [out.readInt16LE(w.dataStart + f * 4), out.readInt16LE(w.dataStart + f * 4 + 2)]), [[2, -2], [3, -3], [4, -4]]);
+  assert.strictEqual(out.readUInt32LE(4), out.length - 8); // RIFF size
+  // Out-of-range times clamp instead of throwing.
+  assert.strictEqual(parseWav(sliceWav(src, -1, 99)).frames, 10);
+  assert.strictEqual(parseWav(sliceWav(src, 0.9, 0.1)).frames, 0);
+});
+
+test('sliceWav keeps extra chunks out and odd-sized fmt padded', () => {
+  const src = wav16(8, 1, [1, 2, 3, 4, 5, 6, 7, 8]);
+  // insert a LIST chunk before data
+  const list = Buffer.concat([Buffer.from('LIST'), Buffer.from([3, 0, 0, 0]), Buffer.from('abc'), Buffer.alloc(1)]);
+  const withList = Buffer.concat([src.subarray(0, 36), list, src.subarray(36)]);
+  withList.writeUInt32LE(withList.length - 8, 4);
+  const out = sliceWav(withList, 0.25, 0.75);
+  const w = parseWav(out);
+  assert.strictEqual(w.frames, 4);
+  assert.deepStrictEqual([0, 1, 2, 3].map((f) => out.readInt16LE(w.dataStart + f * 2)), [3, 4, 5, 6]);
+});

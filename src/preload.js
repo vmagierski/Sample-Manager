@@ -19,13 +19,17 @@ contextBridge.exposeInMainWorld('sm', {
   updateTags: (id, tags) => ipcRenderer.invoke('samples:tag', id, tags),
   setDuration: (id, ms) => ipcRenderer.invoke('sample:duration', id, ms),
   readSample: (id) => ipcRenderer.invoke('sample:read', id),
-  // paths: string | string[] — main supplies the (required, non-empty) drag icon.
-  startDrag: (paths) => ipcRenderer.send('sample:startDrag', paths),
+  // ids: sample id(s); main resolves files (crops included) and supplies the
+  // (required, non-empty) drag icon.
+  startDrag: (ids) => ipcRenderer.send('sample:startDrag', ids),
+  prepareCrop: (id, start, end) => ipcRenderer.invoke('crop:prepare', id, start, end),
+  clearCrop: (id) => ipcRenderer.invoke('crop:clear', id),
   reveal: (id) => ipcRenderer.invoke('sample:reveal', id),
   sampleMenu: (ids) => ipcRenderer.send('sample:contextMenu', ids),
   dirMenu: (dir) => ipcRenderer.send('dir:contextMenu', dir),
   tagMenu: (name) => ipcRenderer.send('tag:contextMenu', name),
   onEditTags: (cb) => subscribe('ui:editTags', cb),
+  onShowInSidebar: (cb) => subscribe('ui:showInSidebar', cb),
   foldersMenu: (at, state) => ipcRenderer.send('rail:foldersMenu', at, state),
   onFoldersCommand: (cb) => subscribe('ui:folders', cb),
   onLibraryChanged: (cb) => subscribe('library:changed', cb),

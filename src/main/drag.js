@@ -1,6 +1,7 @@
 const fs = require('fs');
 const { ipcMain, nativeImage } = require('electron');
 const db = require('./db');
+const crop = require('./crop');
 
 // macOS crashes the drag if the icon is empty, so we always pass this one.
 // Drawn once at startup (a waveform glyph on a rounded tile) rather than
@@ -41,10 +42,21 @@ function register() {
   const icon = makeDragIcon();
   if (icon.isEmpty()) throw new Error('drag icon is empty — startDrag would crash on macOS');
 
-  // Accepts one path or an array (multi-select drag). Only files we indexed
-  // and that still exist are handed to the OS.
-  ipcMain.on('sample:startDrag', (event, paths) => {
-    const files = [].concat(paths || []).filter((p) => typeof p === 'string' && db.hasPath(p) && fs.existsSync(p));
+  // Takes sample ids (one or an array, for multi-select). A sample with a crop
+  // region drags out its cropped file; others drag the original. Only indexed
+  // samples whose files exist are handed to the OS.
+  ipcMain.on('sample:startDrag', async (event, ids) => {
+    const files = [];
+    for (const id of [].concat(ids || [])) {
+      try {
+        const p = crop.has(id) ? await crop.materialize(id) : db.getById(id)?.path;
+        if (p && fs.existsSync(p)) files.push(p);
+      } catch (err) {
+        console.warn(`drag: crop for sample ${id} failed: ${err.message}`);
+        const orig = db.getById(id)?.path; // fall back to the whole sample
+        if (orig && fs.existsSync(orig)) files.push(orig);
+      }
+    }
     if (!files.length) return;
     event.sender.startDrag({ file: files[0], files, icon });
   });
