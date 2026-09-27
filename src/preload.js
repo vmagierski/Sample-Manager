@@ -29,6 +29,13 @@ contextBridge.exposeInMainWorld('sm', {
   dirMenu: (dir) => ipcRenderer.send('dir:contextMenu', dir),
   tagMenu: (name) => ipcRenderer.send('tag:contextMenu', name),
   onEditTags: (cb) => subscribe('ui:editTags', cb),
+  onReveal: (cb) => subscribe('ui:reveal', cb),
+  // Quick Search panel
+  quickHide: () => ipcRenderer.send('quick:hide'),
+  quickOpen: (id, path) => ipcRenderer.send('quick:open', id, path),
+  openMainWindow: () => ipcRenderer.send('app:openMain'),
+  onQuickShown: (cb) => subscribe('quick:shown', cb),
+  onQuickHidden: (cb) => subscribe('quick:hidden', cb),
   onShowInSidebar: (cb) => subscribe('ui:showInSidebar', cb),
   foldersMenu: (at, state) => ipcRenderer.send('rail:foldersMenu', at, state),
   onFoldersCommand: (cb) => subscribe('ui:folders', cb),

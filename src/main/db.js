@@ -291,7 +291,8 @@ function escapeLike(s) {
   return s.replace(/[\\%_]/g, (c) => '\\' + c);
 }
 
-// filter: { search, tags: string[], untagged: bool, dirs: string[], folderId }
+// filter: { search, tags: string[], untagged: bool, dirs: string[], folderId,
+//           rank: bool (file-name matches first), limit: number }
 function listSamples(filter = {}) {
   const where = [];
   const params = [];
@@ -336,6 +337,16 @@ function listSamples(filter = {}) {
     params.push(like, like);
   }
 
+  // Quick search ranks samples whose *file name* contains more of the search
+  // words above ones that only match through a folder or tag name.
+  let order = 's.filename COLLATE NOCASE, s.path';
+  if (filter.rank && terms.length) {
+    order = `(${terms.map(() => "(s.filename LIKE ? ESCAPE '\\')").join(' + ')}) DESC, length(s.filename), ${order}`;
+    params.push(...terms.map((t) => `%${escapeLike(t)}%`));
+  }
+  const limit = Math.max(0, Math.floor(filter.limit || 0));
+  if (limit) order += ' LIMIT ?';
+
   const sql = `
     SELECT s.id, s.path, s.filename, s.folder_id AS folderId, s.duration_ms AS durationMs, s.format,
            substr(s.path, length(f.path) + 2) AS relPath,
@@ -344,7 +355,8 @@ function listSamples(filter = {}) {
               WHERE st.sample_id = s.id ORDER BY t.name)) AS tags
     FROM samples s JOIN folders f ON f.id = s.folder_id
     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-    ORDER BY s.filename COLLATE NOCASE, s.path`;
+    ORDER BY ${order}`;
+  if (limit) params.push(limit);
 
   const rows = db.prepare(sql).all(...params);
   for (const r of rows) r.tags = r.tags ? r.tags.split(SEP) : [];

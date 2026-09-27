@@ -122,3 +122,13 @@ test('multiple folders are ORed, and search stays inside them', () => {
   assert.deepStrictEqual(got({ dirs: ['/m'] }), ['a/Kick.wav', 'a/Snare.wav', 'c/Kick.wav']);
   db.removeFolder(f.id);
 });
+
+test('rank + limit: file-name matches first, capped', () => {
+  const f = db.addFolder('/r', 'r');
+  db.syncFolder(f.id, ['Kick Loops/Groove.wav', 'Kick Loops/Big Kick.wav', 'Misc/Kick.wav', 'Misc/Kicker Long Name.wav'].map((p) => ({ path: `/r/${p}`, size: 1, mtime: 1 })), () => []);
+  const got = db.listSamples({ dirs: ['/r'], search: 'kick', rank: true }).rows.map((r) => r.filename);
+  assert.deepStrictEqual(got, ['Kick.wav', 'Big Kick.wav', 'Kicker Long Name.wav', 'Groove.wav']); // name hits (shortest first), then folder-only
+  assert.strictEqual(db.listSamples({ dirs: ['/r'], search: 'kick', rank: true, limit: 2 }).rows.length, 2);
+  assert.strictEqual(db.listSamples({ dirs: ['/r'], limit: 3 }).rows.length, 3);
+  db.removeFolder(f.id);
+});

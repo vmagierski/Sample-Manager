@@ -39,6 +39,7 @@ class LibraryWatcher {
   }
 
   async closeAll() {
+    this.closed = true; // ignore any events still in flight (the DB is closing)
     for (const { timer } of this.pendingUnlinks.values()) clearTimeout(timer);
     this.pendingUnlinks.clear();
     await Promise.all([...this.watchers.values()].map((w) => w.close()));
@@ -46,7 +47,7 @@ class LibraryWatcher {
   }
 
   handleAdd(folder, p, st) {
-    if (!scanner.isAudio(p) || !st || !st.isFile()) return;
+    if (this.closed || !scanner.isAudio(p) || !st || !st.isFile()) return;
     // Folder may have been removed while the event was in flight.
     if (!this.watchers.has(folder.id)) return;
     const file = { path: p, size: st.size, mtime: Math.round(st.mtimeMs) };
@@ -63,7 +64,7 @@ class LibraryWatcher {
   }
 
   handleUnlink(p) {
-    if (!scanner.isAudio(p)) return;
+    if (this.closed || !scanner.isAudio(p)) return;
     const row = db.getByPath(p);
     if (!row) return;
     // Finder renames/moves arrive as unlink + add. Hold the delete briefly so a
@@ -77,9 +78,11 @@ class LibraryWatcher {
   }
 
   handleUnlinkDir(dir) {
+    if (this.closed) return;
     // chokidar also emits 'unlink' for each file inside, which goes through
     // the rename window above; this just catches anything it missed.
     setTimeout(() => {
+      if (this.closed) return;
       const prefix = dir + path.sep;
       for (const p of this.pendingUnlinks.keys()) if (p.startsWith(prefix)) return;
       db.removeDir(dir);

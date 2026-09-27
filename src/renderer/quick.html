@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:">
+  <title>Quick Search</title>
+  <link rel="stylesheet" href="quick.css">
+</head>
+<body>
+  <div id="bar">
+    <svg class="glass" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+    <span id="qchips" hidden></span>
+    <input id="q" type="text" placeholder="Search samples…   #tag to filter by tag" spellcheck="false" autocomplete="off">
+    <span id="count"></span>
+  </div>
+  <ul id="results"></ul>
+  <canvas id="wave"></canvas>
+  <div id="hints">
+    <span><kbd>↑</kbd><kbd>↓</kbd> preview</span>
+    <span><kbd>⇥</kbd> #tag chip</span>
+    <span><kbd>⇧↵</kbd> play / stop</span>
+    <span>drag → Logic</span>
+    <span><kbd>↵</kbd> open in app</span>
+    <span><kbd>⌘↵</kbd> Finder</span>
+    <span><kbd>esc</kbd> close</span>
+  </div>
+  <script src="quick.js"></script>
+</body>
+</html>

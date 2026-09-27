@@ -7,6 +7,7 @@ const drag = require('./drag');
 const { LibraryWatcher } = require('./watcher');
 const { readPlayable } = require('./audio');
 const crop = require('./crop');
+const quick = require('./quick');
 
 // Same library for `npm start` and the installed .app (whose productName would
 // otherwise give it a different userData folder). Override for a throwaway
@@ -181,6 +182,10 @@ function registerIpc() {
   ipcMain.handle('folders:hidden', () => db.listHidden());
   ipcMain.handle('recording:save', (_e, bytes, name) => saveRecording(bytes, name));
   ipcMain.handle('library:rescan', () => rescanAll());
+  ipcMain.on('app:openMain', () => {
+    quick.hide();
+    openMainWindow();
+  });
   ipcMain.handle('samples:list', (_e, filter) => db.listSamples(filter));
   ipcMain.handle('tags:list', () => db.listTags());
   ipcMain.handle('samples:tag', (_e, id, tags) => {
@@ -358,11 +363,34 @@ function dirMenu(sender, dir) {
 
 function buildMenu() {
   const template = [
-    { role: 'appMenu' },
+    {
+      label: app.name,
+      submenu: [
+        { role: 'about' },
+        { type: 'separator' },
+        { role: 'services' },
+        { type: 'separator' },
+        { role: 'hide' },
+        { role: 'hideOthers' },
+        { role: 'unhide' },
+        { type: 'separator' },
+        // ⌘Q only closes the window: the app keeps running in the menu bar
+        // (Quick Search hotkey, folder watching). ⌥⌘Q quits for real.
+        { label: 'Close to Menu Bar', accelerator: 'CmdOrCtrl+Q', click: () => win && win.close() },
+        { label: `Quit ${app.name} Completely`, accelerator: 'Alt+CmdOrCtrl+Q', click: () => app.quit() },
+      ],
+    },
     {
       label: 'File',
       submenu: [
         { label: 'Add Folder…', accelerator: 'CmdOrCtrl+O', click: () => pickAndAddFolders() },
+        {
+          label: 'Quick Search',
+          // Shown for reference; the global hotkey itself is registered by quick.js.
+          accelerator: quick.hotkey() || undefined,
+          registerAccelerator: false,
+          click: () => quick.show(),
+        },
         { label: 'Rescan Library', accelerator: 'CmdOrCtrl+Shift+R', click: () => rescanAll() },
         { type: 'separator' },
         { label: 'Edit Tag Rules…', click: () => shell.openPath(RULES_PATH) },
@@ -399,8 +427,40 @@ function createWindow() {
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
   win.on('closed', () => {
     win = null;
+    setDockPresence(false); // back to the menu bar only
   });
 }
+
+// Bring up the main window (recreating it if it was closed — the app keeps
+// running in the menu bar). Resolves once its page has loaded.
+// Menu-bar app: with the main window closed the app lives only in the menu
+// bar ("accessory": no ⌘Tab entry, no Dock icon); while the window is open
+// it's a normal app you can ⌘Tab to.
+function setDockPresence(on) {
+  if (process.platform === 'darwin') app.setActivationPolicy(on ? 'regular' : 'accessory');
+}
+
+function openMainWindow() {
+  setDockPresence(true);
+  if (!win) createWindow();
+  if (win.isMinimized()) win.restore();
+  win.show();
+  app.focus({ steal: true });
+  return new Promise((resolve) => {
+    if (win.webContents.isLoading()) win.webContents.once('did-finish-load', resolve);
+    else resolve();
+  });
+}
+
+// From Quick Search: show this sample in the main window.
+async function openInMain(id, filePath) {
+  await openMainWindow();
+  send('ui:reveal', { id, path: filePath });
+}
+
+// One copy only: a second launch just brings up the running one.
+if (!app.requestSingleInstanceLock()) app.exit(0);
+app.on('second-instance', () => openMainWindow());
 
 app.whenReady().then(() => {
   db.open(path.join(app.getPath('userData'), 'library.db'));
@@ -408,8 +468,20 @@ app.whenReady().then(() => {
   ensureAppMusicDir();
   watcher = new LibraryWatcher({ onChange: notifyChanged });
   registerIpc();
+  // Quick Search first, then the main window (setting the panel up can touch
+  // window visibility on macOS).
+  quick.init({
+    preload: path.join(__dirname, '..', 'preload.js'),
+    rendererDir: path.join(__dirname, '..', 'renderer'),
+    openMain: openInMain,
+    openMainWindow,
+  });
   buildMenu();
-  createWindow();
+  // Opened at login (or SM_START_HIDDEN): start quietly in the menu bar.
+  // Otherwise — launched from Spotlight, Finder, the Dock — show the window.
+  const atLogin = process.platform === 'darwin' && app.getLoginItemSettings().wasOpenedAtLogin;
+  if (atLogin || process.env.SM_START_HIDDEN) setDockPresence(false);
+  else openMainWindow();
 
   // Catch anything that changed while the app was closed, then keep watching.
   for (const folder of db.listFolders()) {
@@ -417,23 +489,24 @@ app.whenReady().then(() => {
     scanFolder(folder);
   }
 
-  app.on('activate', () => {
-    if (!BrowserWindow.getAllWindows().length) createWindow();
-  });
+  // Launching the app again (Spotlight, Finder, Launchpad) while it runs in
+  // the menu bar: macOS sends a "reopen" → 'activate' → show the window.
+  // (Not 'did-become-active': the app also becomes active as it launches,
+  // which would defeat starting hidden at login.)
+  app.on('activate', () => openMainWindow());
 });
 
-app.on('window-all-closed', () => app.quit());
+// Closing the window doesn't quit: the app stays in the menu bar so the Quick
+// Search hotkey keeps working. ⌘Q (or the menu-bar icon → Quit) quits.
+app.on('window-all-closed', () => {});
 
-let quitting = false;
-app.on('before-quit', (e) => {
-  if (quitting) return;
-  quitting = true;
-  e.preventDefault();
+// Quit in one go. (Cancelling the first quit to await async cleanup and then
+// re-quitting got swallowed when quitting from the menu-bar menu, so it took
+// two Quits.) Watchers stop immediately, without waiting; the database closes
+// once every window is gone.
+app.on('before-quit', () => {
+  quick.dispose();
   crop.clearAll();
-  Promise.resolve(watcher && watcher.closeAll())
-    .catch(() => {})
-    .finally(() => {
-      db.close();
-      app.quit();
-    });
+  if (watcher) watcher.closeAll().catch(() => {});
 });
+app.on('will-quit', () => db.close());

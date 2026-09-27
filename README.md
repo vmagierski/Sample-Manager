@@ -19,6 +19,22 @@ Re-run it after changing code. The build is ad-hoc signed (fine for your own mac
 
 The library DB lives in `~/Library/Application Support/sample-manager/library.db`.
 
+## Quick Search (⌃⌥Space)
+
+A Spotlight-style panel you can call up from anywhere, including over full-screen Logic:
+type to search the whole library (every word must match; file-name matches first). `#tag`
+filters by tag — a prefix like `#ki` is enough, and Space / Tab / ↵ turns it into a chip
+(Backspace in an empty box removes the last one), **↑/↓** to audition, **⇧↵** play/stop, **drag** a result straight
+into Logic, **↵** to open it in the main window, **⌘↵** to show it in Finder, **esc** to close.
+
+Sample Manager is a menu-bar app: with its window closed it lives only in the menu bar
+(waveform icon — no ⌘Tab / Dock entry) so the hotkey and folder watching keep working; while
+the window is open it's a normal app. **⌘Q** closes the window back to the menu bar; **⌥⌘Q** or
+the menu-bar icon → *Quit* quits completely. Launching it (Spotlight, Finder) opens the window;
+*Open at Login* (in the icon's menu) starts it quietly in the menu bar. To change the hotkey, put e.g.
+`{ "quickSearchHotkey": "Control+Alt+Space" }` in
+`~/Library/Application Support/sample-manager/settings.json` and restart.
+
 ## Keys
 
 | Key | Action |

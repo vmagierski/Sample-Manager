@@ -2065,6 +2065,8 @@ function revealInSidebar(filePath) {
   li.classList.add('flash');
 }
 window.sm.onShowInSidebar(revealInSidebar);
+// Quick Search → "open in Sample Manager": select it here (switching view if hidden).
+window.sm.onReveal(({ id, path: filePath }) => revealSample(id, filePath));
 
 // Sidebar sections collapse to their header; the other one takes the room.
 // Session-only: both are open at launch.
