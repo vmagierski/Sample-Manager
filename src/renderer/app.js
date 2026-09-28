@@ -1841,8 +1841,8 @@ ui.railGrip.addEventListener('dblclick', () => {
 // --- Rec / Recall -----------------------------------------------------------------
 //
 // The tap worklet streams the bus to us in small chunks. We keep:
-//  - a ring buffer of the last RECALL_SECONDS you actually heard (idle silence
-//    between auditions is skipped), saved by "Last 10s";
+//  - a ring buffer of the last RECALL_SECONDS, silence included (the gaps
+//    between hits are the rhythm), saved by "Last 10s";
 //  - while Rec is on, every chunk (literal, silence included).
 
 const RECALL_SECONDS = 10;
@@ -1874,22 +1874,12 @@ async function startTap(ctx) {
   }
 }
 
-function peak(a) {
-  let m = 0;
-  for (let i = 0; i < a.length; i++) {
-    const v = a[i] < 0 ? -a[i] : a[i];
-    if (v > m) m = v;
-  }
-  return m;
-}
-
 function onTapChunk(l, r) {
   if (tap.rec) {
     tap.rec.push([l, r]);
     tap.recFrames += l.length;
     if (tap.recFrames >= REC_MAX_SECONDS * tap.rate) stopRecording();
   }
-  if (!player.playing && peak(l) < SILENCE && peak(r) < SILENCE) return;
   const size = tap.ring[0].length;
   for (let i = 0; i < l.length; i++) {
     tap.ring[0][tap.ringPos] = l[i];
