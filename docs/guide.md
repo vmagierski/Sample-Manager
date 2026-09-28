@@ -47,7 +47,7 @@ Move with ↑/↓ and each sample plays as you land on it (turn off **Auto-play*
 
 **Drag** any row — or the whole selection — into Logic or any other app. Right-click a sample for Show in Finder, Copy Path, Show in Sidebar or Edit Tags.
 
-The player shows the waveform: click to jump, **⌥-scroll** to zoom (horizontal scroll pans while zoomed), drag the player's top edge to make it taller. **L** loops. The volume slider is in dB.
+The player shows the waveform: click to jump, **⌥-scroll** to zoom (horizontal scroll pans while zoomed), drag the player's top edge to make it taller. **L** (or the loop button) loops; it stays on as you move through samples until you turn it off, and starts off at each launch. The volume slider is in dB.
 
 ## Crops
 

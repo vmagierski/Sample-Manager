@@ -1333,7 +1333,7 @@ async function playRow(row, from = 0) {
   player.row = row;
   player.buf = null;
   player.view = null;
-  setLoop(player.regions.has(row.id));
+  setLoop(loopChoice || player.regions.has(row.id));
   player.offset = 0;
   player.error = null;
   renderPlayer();
@@ -1644,7 +1644,7 @@ function clearRegion() {
   if (!row || !player.regions.has(row.id)) return;
   player.regions.delete(row.id);
   window.sm.clearCrop(row.id);
-  setLoop(false);
+  setLoop(loopChoice);
   updateRowClasses();
   if (player.playing) startAt(position()); // drop the loop points, keep playing
   else renderPlayer();
@@ -1723,17 +1723,20 @@ function setRegionEdge(which) {
 
 // --- loop --------------------------------------------------------------------------------
 
-// Loop is off by default. Selecting a region turns it on; clearing it turns it
-// off; moving to another sample resets it (on if that sample has a region).
-// The button overrides any of that for the current sample — on with no region
-// loops the whole sample.
+// Loop is off at launch. Turning it on with the button (or L) keeps it on
+// while you move through samples, until you turn it off again. A crop region
+// loops on its own either way; clearing it goes back to the button's setting.
+// On with no region loops the whole sample.
+let loopChoice = false; // what the button last set
+
 function setLoop(on) {
   player.loop = on;
   renderLoop();
 }
 
 function toggleLoop() {
-  setLoop(!player.loop);
+  loopChoice = !player.loop;
+  setLoop(loopChoice);
   if (player.playing) startAt(position()); // apply to what's playing now
 }
 
