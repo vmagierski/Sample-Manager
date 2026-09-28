@@ -191,6 +191,18 @@ test('incremental sync: unchanged files untouched, re-tagged only when the rules
   db.removeFolder(f.id);
 });
 
+test('no rules loaded (broken tag-rules.json): unchanged files keep their auto tags', () => {
+  const f = db.addFolder('/n', 'n');
+  const files = [{ path: '/n/Kick.wav', size: 1, mtime: 1 }];
+  db.syncFolder(f.id, files, tagger, { rulesHash: 'v1' });
+  db.syncFolder(f.id, files, () => [], { rulesHash: null });
+  assert.deepStrictEqual(db.listSamples({ dirs: ['/n'] }).rows[0].tags, ['kick']);
+  // …and the next good load isn't mistaken for "rules unchanged".
+  db.syncFolder(f.id, files, () => ['boom'], { rulesHash: 'v2' });
+  assert.deepStrictEqual(db.listSamples({ dirs: ['/n'] }).rows[0].tags, ['boom']);
+  db.removeFolder(f.id);
+});
+
 test('change log: per-directory deltas and the version listDirs reports', () => {
   const f = db.addFolder('/c', 'c');
   db.takeChanges();

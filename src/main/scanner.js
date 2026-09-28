@@ -94,8 +94,10 @@ async function walk(root) {
   return out;
 }
 
-// Changes whenever the loaded rules could tag anything differently.
-const rulesHash = () => hash;
+// Changes whenever the loaded rules could tag anything differently. Null
+// until tag-rules.json has loaded once, so a broken file doesn't untag
+// the whole library.
+const rulesHash = () => hash || null;
 
 const ruleTags = () => [...new Set(rules.map((r) => r.tag))];
 

@@ -366,13 +366,14 @@ const CHUNK = 2000;
 // ones, drop rows for files that no longer exist. Files with the same size and
 // mtime as last time aren't touched — unless the tag rules changed since this
 // folder was last synced (opts.rulesHash; none given = always), in which case
-// their auto tags are re-derived. Rows added after opts.startedAt (by the
+// their auto tags are re-derived. rulesHash null = no rules could be loaded:
+// leave unchanged rows' tags alone. Rows added after opts.startedAt (by the
 // watcher, while the walk ran) aren't treated as gone.
 //
 // A generator: one transaction per step, so syncFolderAsync can yield to the
 // event loop in between and a big library never blocks the main process long.
 function* syncSteps(folderId, files, tagsFor, { rulesHash, startedAt = Infinity } = {}) {
-  const retag = rulesHash === undefined || q.folderRulesHash.get(folderId)?.hash !== rulesHash;
+  const retag = rulesHash !== null && (rulesHash === undefined || q.folderRulesHash.get(folderId)?.hash !== rulesHash);
   const known = new Map(); // path -> row, for this folder's rows not seen in the walk (yet)
   for (let last = 0; ; yield) {
     const page = q.folderRows.all(folderId, last, CHUNK * 10);
@@ -409,7 +410,7 @@ function* syncSteps(folderId, files, tagsFor, { rulesHash, startedAt = Infinity 
     yield;
   }
   if (retagged) changedAll(); // auto tags may have changed anywhere
-  q.setRulesHash.run(rulesHash ?? null, folderId);
+  if (rulesHash !== null) q.setRulesHash.run(rulesHash ?? null, folderId);
 }
 
 // All at once, in one transaction (tests, small folders).
