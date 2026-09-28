@@ -2,7 +2,7 @@
 
 A fast, keyboard-driven sample browser for macOS. Point it at your sample folders and it indexes and tags everything, plays each sample as you arrow through the list, and lets you drag any sample — or just the part you want — straight into Logic or any other DAW.
 
-![Sample Manager]()
+![Quick Search (⌃⌥Space) floating over the main window, auditioning a riser](docs/media/quick-search.png)
 
 ## Features
 
@@ -17,6 +17,10 @@ A fast, keyboard-driven sample browser for macOS. Point it at your sample folder
 - **Rec and Last 10s.** Record what you're auditioning, or save the last ten seconds you heard after the fact.
 - **Random.** One key plays a random sample from whatever you've filtered — good for breaking out of habits.
 - **Lives in the menu bar.** Close the window and it keeps watching your folders, with Quick Search one keystroke away.
+
+![The main window: folder and tag chips in the search box, a crop looping on the waveform](docs/media/main-window.png)
+
+![Typing /vint to pick a folder from the suggestions](docs/media/folder-picker.png)
 
 ## Getting started
 
