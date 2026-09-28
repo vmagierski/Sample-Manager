@@ -20,7 +20,7 @@ function configure(cacheDir, capBytes) {
 }
 
 function keyFor(filePath, st) {
-  return crypto.createHash('sha1').update(`${filePath}\0${st.size}\0${Math.round(st.mtimeMs)}`).digest('hex');
+  return crypto.createHash('sha1').update(`${filePath}\0${st.size}\0${Math.round(st.mtimeMs)}\0f32`).digest('hex');
 }
 
 // Path of the cached conversion, or null. A hit counts as a use (mtime = now).

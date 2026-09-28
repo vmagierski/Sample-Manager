@@ -132,8 +132,9 @@ function aiffToWav(buf) {
 
 // CAF (Apple Loops: usually AAC, sometimes ALAC/PCM) isn't a container
 // Chromium can open. macOS's afconvert handles every CAF codec, ~35ms/loop.
-// Converted once to 24-bit PCM — the format crops are cut in, so what you
-// hear is what you drag — and kept in the conversion cache (convcache.js).
+// Converted once to 32-bit float — AAC can decode above 0 dBFS, which
+// integer PCM would clip — and kept in the conversion cache (convcache.js).
+// Crops of a CAF are cut from the same file, so what you hear is what you drag.
 let tmpSeq = 0;
 async function cafToWav(filePath, signal) {
   const st = await fs.promises.stat(filePath);
@@ -142,7 +143,7 @@ async function cafToWav(filePath, signal) {
   if (hit) return fs.promises.readFile(hit, { signal });
   const out = convcache.enabled() ? convcache.tempFor(key) : path.join(os.tmpdir(), `sm-caf-${process.pid}-${++tmpSeq}.wav`);
   try {
-    await afconvert(['-f', 'WAVE', '-d', 'LEI24', filePath, out], signal);
+    await afconvert(['-f', 'WAVE', '-d', 'LEF32', filePath, out], signal);
     if (convcache.enabled()) return await fs.promises.readFile(convcache.commit(key, out), { signal });
     return await fs.promises.readFile(out, { signal });
   } finally {

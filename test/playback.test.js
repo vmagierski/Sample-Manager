@@ -225,7 +225,7 @@ test('CAF: converted once, then served from the cache', { skip: !hasAfconvert },
   const first = await audio.readPlayable(caf);
   const w = audio.parseWav(first);
   assert.strictEqual(w.rate, 44100);
-  assert.strictEqual(w.blockAlign, 3); // 24-bit mono
+  assert.strictEqual(w.blockAlign, 4); // 32-bit float mono
   assert.strictEqual(fs.readdirSync(path.join(dir, 'cache')).length, 1);
 
   const again = await audio.readPlayable(caf);
