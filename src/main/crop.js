@@ -59,4 +59,17 @@ async function materialize(id) {
   return dest;
 }
 
-module.exports = { prepare, clear, clearAll, has, materialize, CROP_DIR };
+// "Save…": copy the rendered crop wherever the user picks.
+async function saveTo(id, dest) {
+  const p = pending.get(id);
+  if (!p) throw new Error('no crop for this sample');
+  await fs.promises.copyFile(await p.file, dest);
+  return dest;
+}
+
+function suggestedName(id) {
+  const p = pending.get(id);
+  return p ? cropName(p.source, p.start, p.end) : null;
+}
+
+module.exports = { prepare, clear, clearAll, has, materialize, saveTo, suggestedName, CROP_DIR };

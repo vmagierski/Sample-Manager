@@ -314,3 +314,12 @@ body.resizing, body.resizing * { cursor: ns-resize !important; }
 #rail-grip { position: absolute; top: 0; bottom: 0; right: -4px; width: 8px; cursor: ew-resize; z-index: 3; }
 #rail-grip:hover { background: linear-gradient(90deg, transparent 3px, var(--accent) 3px, var(--accent) 5px, transparent 5px); opacity: 0.6; }
 body.resizing-x, body.resizing-x * { cursor: ew-resize !important; }
+
+/* handle floating on the crop region: drag out just the crop, or save it */
+#wave-wrap { position: relative; }
+#crop-bar { position: absolute; top: 3px; display: flex; transform: translateX(-50%); z-index: 2; filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.5)); }
+#crop-drag, #crop-save { font-size: 11px; font-weight: 600; line-height: 1; padding: 4px 8px; border: 0; white-space: nowrap; }
+#crop-drag { background: var(--accent); color: #1b1c20; border-radius: 10px 0 0 10px; cursor: grab; }
+#crop-drag:active { cursor: grabbing; }
+#crop-save { background: #3a2c17; color: var(--accent); border-radius: 0 10px 10px 0; border-left: 1px solid rgba(0, 0, 0, 0.35); }
+#crop-save:hover { background: #4a381d; border-left: 1px solid rgba(0, 0, 0, 0.35); }

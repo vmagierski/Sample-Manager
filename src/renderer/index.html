@@ -91,7 +91,13 @@
         <button id="recall" title="Save the last 10 seconds you heard">⟲ Last 10s</button>
       </div>
     </div>
-    <canvas id="wave" title="Drag to crop · drag edges to resize, inside to move · double-click to clear · I / O set start / end · ⌥-scroll to zoom"></canvas>
+    <div id="wave-wrap">
+      <canvas id="wave" title="Drag to crop · drag edges to resize, inside to move · double-click to clear · I / O set start / end · ⌥-scroll to zoom"></canvas>
+      <div id="crop-bar" hidden>
+        <span id="crop-drag" draggable="true" title="Drag just the crop into Logic, a Finder window or the Desktop">⠿ Drag crop</span>
+        <button id="crop-save" title="Save the crop as a WAV file…">Save…</button>
+      </div>
+    </div>
   </footer>
 
   <script src="app.js"></script>

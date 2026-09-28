@@ -196,6 +196,17 @@ function registerIpc() {
   ipcMain.handle('sample:duration', (_e, id, ms) => db.setDuration(id, ms));
   ipcMain.handle('crop:prepare', (_e, id, start, end) => crop.prepare(id, +start, +end));
   ipcMain.handle('crop:clear', (_e, id) => crop.clear(id));
+  ipcMain.handle('crop:save', async (_e, id) => {
+    const name = crop.suggestedName(id);
+    if (!name) return null;
+    const res = await dialog.showSaveDialog(win, {
+      title: 'Save crop',
+      defaultPath: path.join(app.getPath('desktop'), name),
+      filters: [{ name: 'WAV audio', extensions: ['wav'] }],
+    });
+    if (res.canceled || !res.filePath) return null;
+    return crop.saveTo(id, res.filePath);
+  });
   ipcMain.handle('sample:read', async (_e, id) => {
     const row = db.getById(id);
     if (!row) throw new Error('unknown sample');

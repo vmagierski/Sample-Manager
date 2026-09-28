@@ -50,6 +50,9 @@ const ui = {
   cropInfo: $('#crop-info'),
   cropLen: $('#crop-len'),
   cropClear: $('#crop-clear'),
+  cropBar: $('#crop-bar'),
+  cropDrag: $('#crop-drag'),
+  cropSave: $('#crop-save'),
   time: $('#time'),
   autoplay: $('#autoplay'),
   volume: $('#volume'),
@@ -1262,6 +1265,17 @@ function peaksFor(buf, width, v0, v1) {
   return data;
 }
 
+// Keep the crop handle centred on the visible part of the region.
+function placeCropBar(r) {
+  const visible = r && r.x1 > 0 && r.x0 < r.W;
+  ui.cropBar.hidden = !visible;
+  if (!visible) return;
+  const scale = ui.wave.clientWidth / r.W; // canvas px → CSS px
+  const mid = ((Math.max(0, r.x0) + Math.min(r.W, r.x1)) / 2) * scale;
+  const half = ui.cropBar.offsetWidth / 2 + 4;
+  ui.cropBar.style.left = `${clamp(mid, half, ui.wave.clientWidth - half)}px`;
+}
+
 function drawWave() {
   const c = ui.wave;
   const g = c.getContext('2d');
@@ -1270,6 +1284,7 @@ function drawWave() {
   if (!player.buf) {
     g.fillStyle = '#2e3138';
     g.fillRect(0, mid, c.width, 1);
+    placeCropBar(null);
     return;
   }
   // While playing zoomed in, page the view along with the playhead — except
@@ -1288,6 +1303,7 @@ function drawWave() {
   const reg = curRegion();
   const x0 = reg ? xOf(reg.start) : -Infinity;
   const x1 = reg ? xOf(reg.end) : Infinity;
+  placeCropBar(reg && { x0, x1, W });
   if (reg) {
     g.fillStyle = 'rgba(255, 170, 60, 0.13)';
     g.fillRect(x0, 0, x1 - x0, c.height);
@@ -2081,6 +2097,24 @@ ui.loop.addEventListener('click', toggleLoop);
 ui.back.addEventListener('click', () => goNav(-1));
 ui.random.addEventListener('click', randomSample);
 ui.cropClear.addEventListener('click', clearRegion);
+
+// The handle drags out (or saves) just the crop — its own element, so it never
+// moves or resizes the region itself.
+ui.cropDrag.addEventListener('dragstart', (e) => {
+  e.preventDefault();
+  if (player.row && curRegion()) window.sm.startDrag([player.row.id]);
+});
+ui.cropSave.addEventListener('mousedown', (e) => e.preventDefault());
+ui.cropSave.addEventListener('click', async () => {
+  if (!player.row || !curRegion()) return;
+  try {
+    const saved = await window.sm.saveCrop(player.row.id);
+    if (saved) flash(`Saved ${saved.split('/').pop()}`);
+  } catch (err) {
+    console.error(err);
+    flash("Couldn't save the crop");
+  }
+});
 ui.rec.addEventListener('click', toggleRecording);
 ui.recall.addEventListener('click', recall);
 ui.fwd.addEventListener('click', () => goNav(1));

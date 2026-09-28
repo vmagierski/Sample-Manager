@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('sm', {
   startDrag: (ids) => ipcRenderer.send('sample:startDrag', ids),
   prepareCrop: (id, start, end) => ipcRenderer.invoke('crop:prepare', id, start, end),
   clearCrop: (id) => ipcRenderer.invoke('crop:clear', id),
+  saveCrop: (id) => ipcRenderer.invoke('crop:save', id),
   reveal: (id) => ipcRenderer.invoke('sample:reveal', id),
   sampleMenu: (ids) => ipcRenderer.send('sample:contextMenu', ids),
   dirMenu: (dir) => ipcRenderer.send('dir:contextMenu', dir),
