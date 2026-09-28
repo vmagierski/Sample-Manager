@@ -1621,12 +1621,15 @@ function liveLoop(reg) {
   return true;
 }
 
+let lastCropLength = 1; // seconds; ⇧R's random regions use it
+
 function commitRegion(start, end) {
   const row = player.row;
   if (!row || !player.buf) return;
   if (end - start < 0.01) return clearRegion();
   const reg = { start: Math.max(0, start), end: Math.min(player.buf.duration, end) };
   player.regions.set(row.id, reg);
+  lastCropLength = reg.end - reg.start;
   setLoop(true);
   window.sm.prepareCrop(row.id, reg.start, reg.end).catch((err) => {
     console.error(err);
@@ -2053,7 +2056,10 @@ function flash(msg) {
 // Random pick from what's listed: whatever the current search / tags /
 // folders match, or — with no filters — the whole (non-hidden) library.
 // A Back step, so ⌘[ returns to the previous sample.
-function randomSample() {
+// R: a random sample from what the filters show. ⇧R: that, plus a crop
+// region at a random spot in it, looping — as long as the last crop you
+// made (1s before any).
+async function randomSample(withRegion = false) {
   const n = state.rows.length;
   if (!n) return;
   recordNav('random');
@@ -2063,7 +2069,13 @@ function randomSample() {
   ensureVisible(i);
   renderList();
   updateRowClasses();
-  playRow(state.rows[i]);
+  const row = state.rows[i];
+  await playRow(row);
+  if (!withRegion || player.row !== row || !player.buf) return;
+  const dur = player.buf.duration;
+  const len = lastCropLength < dur ? lastCropLength : dur / 2;
+  const start = Math.random() * (dur - len);
+  commitRegion(start, start + len);
 }
 
 function pageSize() {
@@ -2186,9 +2198,10 @@ window.addEventListener('keydown', (e) => {
       setRegionEdge(e.key === 'i' ? 'in' : 'out');
       break;
     case 'r':
+    case 'R':
       if (mod) return;
       e.preventDefault();
-      randomSample();
+      randomSample(e.shiftKey);
       break;
     case 'a':
       if (!mod) return;
@@ -2326,7 +2339,7 @@ window.sm.onFoldersCommand((cmd) => (cmd === 'collapse' ? collapseFolders() : de
 ui.play.addEventListener('click', togglePlay);
 ui.loop.addEventListener('click', toggleLoop);
 ui.back.addEventListener('click', () => goNav(-1));
-ui.random.addEventListener('click', randomSample);
+ui.random.addEventListener('click', (e) => randomSample(e.shiftKey));
 ui.cropClear.addEventListener('click', clearRegion);
 
 // The handle drags out (or saves) just the crop — its own element, so it never

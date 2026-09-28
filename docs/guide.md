@@ -59,7 +59,7 @@ Dragged crops aren't kept: they're written to `~/Library/Caches/Sample Manager/C
 
 ## Random, Rec and Last 10s
 
-**R** or **⤮ Random** plays a random sample from whatever the current filters show, or from the whole library when nothing is filtered.
+**R** or **⤮ Random** plays a random sample from whatever the current filters show, or from the whole library when nothing is filtered. **⇧R** (or ⇧-click ⤮ Random) also drops a crop region at a random spot in it and loops it — as long as the last crop you made, or 1 second before you've made one. Drag it into Logic like any crop.
 
 **● Rec** records whatever Sample Manager plays — audition a few samples, play with a crop loop — and **⟲ Last 10s** saves the last ten seconds you heard, after the fact. Both save 24-bit WAVs to `~/Music/Sample Manager/Recordings`, which is in your library, and select the new recording so you can play or drag it straight away.
 
@@ -81,7 +81,7 @@ Press **Enter** or **T** (or click a row's tag cell) to edit a sample's tags, co
 | `/` or `#` (in search) | Pick a folder / tag chip: ↑↓, Enter or Tab |
 | Backspace (empty search) | Remove the last chip |
 | ⌘A | Select all visible |
-| R | Random sample |
+| R / ⇧R | Random sample / random sample with a random loop region |
 | L | Loop on / off |
 | I / O | Crop start / end at the playhead |
 | Esc | Clear the crop (keeps playing); with no crop, stop |

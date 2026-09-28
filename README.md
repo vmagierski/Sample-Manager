@@ -15,7 +15,7 @@ A fast, keyboard-driven sample browser for macOS. Point it at your sample folder
 - **Crops.** Select part of a waveform and drag just that — no editing, no bouncing. Resize, move and loop it while it plays.
 - **Quick Search, from anywhere.** ⌃⌥Space opens a Spotlight-style panel, even over full-screen Logic: search, audition and drag without leaving your project.
 - **Rec and Last 10s.** Record what you're auditioning, or save the last ten seconds you heard after the fact.
-- **Random.** One key plays a random sample from whatever you've filtered — good for breaking out of habits.
+- **Random.** One key plays a random sample from whatever you've filtered — good for breaking out of habits. ⇧R also loops a random slice of it.
 - **Lives in the menu bar.** Close the window and it keeps watching your folders, with Quick Search one keystroke away.
 
 ![The main window: folder and tag chips in the search box, a crop looping on the waveform](docs/media/main-window.png)
