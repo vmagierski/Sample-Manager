@@ -108,6 +108,7 @@ function clamp(n, lo, hi) {
 // --- data loading ---------------------------------------------------------
 
 let listSeq = 0;
+let listLoading = 0; // list queries in flight
 // opts.reset: the user changed the view — if the current sample isn't in the
 //   new results, start at the top instead of wherever the old index lands.
 // opts.restore: a history snapshot — put selection and scroll back exactly.
@@ -116,13 +117,16 @@ async function refreshList(opts = {}) {
   const { restore, reset } = opts;
   const cursorId = restore ? restore.cursorId : state.rows[state.cursor]?.id;
   const { filter } = state;
-  const res = await window.sm.listSamples({
-    search: [...filter.queries, filter.search].join(' '), // every word ANDed
-    tags: [...filter.tags],
-    untagged: filter.untagged,
-    dirs: [...filter.dirs],
-    rank: true, // best matches first while searching (alphabetical otherwise)
-  });
+  listLoading++;
+  const res = await window.sm
+    .listSamples({
+      search: [...filter.queries, filter.search].join(' '), // every word ANDed
+      tags: [...filter.tags],
+      untagged: filter.untagged,
+      dirs: [...filter.dirs],
+      rank: true, // best matches first while searching (alphabetical otherwise)
+    })
+    .finally(() => listLoading--);
   if (seq !== listSeq) return; // a newer query superseded this one
 
   state.rows = res.rows;
@@ -214,6 +218,9 @@ function renderNav() {
   ui.fwd.disabled = !nav.fwd.length;
 }
 
+// The library change (see onLibraryChanged) that state.dirs is current as of.
+let dirsVersion = 0;
+
 async function refreshRail() {
   const [folders, tags, dirs, hidden] = await Promise.all([
     window.sm.listFolders(),
@@ -222,8 +229,15 @@ async function refreshRail() {
     window.sm.listHidden(),
   ]);
   state.folders = folders;
-  state.dirs = dirs;
+  state.dirs = dirs.dirs;
+  dirsVersion = dirs.version;
   state.hidden = new Set(hidden);
+  return applyRail(tags);
+}
+
+// Rebuild the rail from state.folders / dirs / hidden and these tag counts.
+// True if that dropped a filter (so the list needs reloading).
+function applyRail(tags) {
   const paths = buildTree();
   state.tagCounts = tags.tags;
   state.untaggedCount = tags.untagged;
@@ -248,6 +262,44 @@ async function refreshRail() {
 async function refreshAll() {
   await refreshRail();
   await refreshList();
+}
+
+// A change in the library, from main: { all } for anything broad, else the
+// directories whose samples were added (delta +1), removed (-1) or updated (0),
+// numbered from..to. Patch the folder counts in place (no full listDirs) and
+// reload the list only if the change can touch what it shows.
+async function applyLibraryChange(c) {
+  if (c.to <= dirsVersion) return; // already in the last full read
+  if (c.all || c.from <= dirsVersion) return refreshAll(); // partly in it: can't patch
+  const folderIds = new Set(state.folders.map((f) => f.id));
+  const byKey = new Map(state.dirs.map((d) => [d.folderId + '\0' + d.dir, d]));
+  let counts = false;
+  for (const { folderId, dir, delta } of c.dirs) {
+    if (!delta) continue;
+    counts = true;
+    if (!folderIds.has(folderId)) return refreshAll();
+    const key = folderId + '\0' + dir;
+    const d = byKey.get(key);
+    if (d) d.n += delta;
+    else if (delta > 0) byKey.set(key, { folderId, dir, n: delta });
+    else return refreshAll(); // out of step somehow: start over
+  }
+  dirsVersion = c.to;
+  let filterChanged = false;
+  if (counts) {
+    state.dirs = [...byKey.values()].filter((d) => d.n > 0);
+    filterChanged = applyRail(await window.sm.listTags());
+  }
+
+  const under = (dir, top) => dir === top || dir.startsWith(top + '/');
+  const inView =
+    filterChanged || !state.filter.dirs.size || c.dirs.some(({ dir }) => [...state.filter.dirs].some((f) => under(dir, f)));
+  // A list query already on its way may predate this change: reload to be sure.
+  if (inView || listLoading) return refreshList();
+  // Outside the folders shown: only the total (everything not hidden) moves.
+  const hidden = [...state.hidden];
+  for (const { dir, delta } of c.dirs) if (!hidden.some((h) => under(dir, h))) state.total += delta;
+  renderCount();
 }
 
 // --- rendering: header / rail ----------------------------------------------
@@ -2482,13 +2534,14 @@ ui.volume.addEventListener('dblclick', () => {
 // Header buttons shouldn't steal keyboard focus from the list.
 for (const b of document.querySelectorAll('button')) b.addEventListener('mousedown', (e) => e.preventDefault());
 
-let libTimer = 0;
-window.sm.onLibraryChanged(() => {
-  clearTimeout(libTimer);
-  libTimer = setTimeout(refreshAll, 50);
+// One at a time, in order (each builds on the last).
+let libChanges = Promise.resolve();
+window.sm.onLibraryChanged((c) => {
+  libChanges = libChanges.then(() => applyLibraryChange(c)).catch((err) => console.error(err));
 });
+// A hand edit changes tag counts only, not folders.
 window.sm.onTagsChanged(async () => {
-  if (await refreshRail()) refreshList();
+  if (applyRail(await window.sm.listTags())) refreshList();
 });
 window.sm.onScanStatus(({ busy, label }) => {
   ui.status.textContent = busy ? label || 'Scanning…' : '';

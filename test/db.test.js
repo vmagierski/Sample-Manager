@@ -142,3 +142,94 @@ test('rank: exact name, then phrase, then scattered words', () => {
   assert.deepStrictEqual(got.slice(2), ['Clap White Noise.wav', 'Noise Burst White.wav', 'Whitenoise Sweep.wav']); // phrase, then words
   db.removeFolder(f.id);
 });
+
+test('folder ranges: only paths below the folder, not siblings sharing its prefix', () => {
+  const f = db.addFolder('/g', 'g');
+  const names = ['dir/a.wav', 'dir/sub/b.wav', 'dir0/c.wav', 'dir-x/d.wav', 'dir.wav', 'di/e.wav'];
+  db.syncFolder(f.id, names.map((p) => ({ path: `/g/${p}`, size: 1, mtime: 1 })), () => []);
+  const got = (flt) => db.listSamples(flt).rows.map((r) => r.relPath).sort();
+  const total = db.listSamples().total;
+  const untagged = db.listTags().untagged;
+  assert.deepStrictEqual(got({ dirs: ['/g/dir'] }), ['dir/a.wav', 'dir/sub/b.wav']);
+  assert.deepStrictEqual(got({ dirs: ['/g/dir0'] }), ['dir0/c.wav']);
+  db.hideDir('/g/dir');
+  assert.deepStrictEqual(got({ dirs: ['/g'] }), ['di/e.wav', 'dir-x/d.wav', 'dir.wav', 'dir0/c.wav']);
+  assert.strictEqual(db.listSamples().total, total - 2);
+  db.hideDir('/g/dir/sub'); // inside a hidden folder: not subtracted twice
+  assert.strictEqual(db.listSamples().total, total - 2);
+  assert.strictEqual(db.listTags().untagged, untagged - 2);
+  assert.deepStrictEqual(got({ dirs: ['/g/dir/sub'] }), ['dir/sub/b.wav']); // browsing a hidden folder shows it
+  db.removeDir('/g/dir');
+  assert.deepStrictEqual(got({ dirs: ['/g'] }), ['di/e.wav', 'dir-x/d.wav', 'dir.wav', 'dir0/c.wav']);
+  db.removeFolder(f.id);
+  assert.deepStrictEqual(db.listHidden(), []);
+});
+
+test('incremental sync: unchanged files untouched, re-tagged only when the rules change', () => {
+  const f = db.addFolder('/i', 'i');
+  const files = [{ path: '/i/Kick.wav', size: 1, mtime: 1 }, { path: '/i/Kick 2.wav', size: 1, mtime: 1 }, { path: '/i/Other.wav', size: 1, mtime: 1 }];
+  const tagsOf = () => Object.fromEntries(db.listSamples({ dirs: ['/i'] }).rows.map((r) => [r.filename, r.tags]));
+  db.syncFolder(f.id, files, tagger, { rulesHash: 'v1' });
+  db.setTags(db.getByPath('/i/Kick 2.wav').id, ['mine']);
+  db.takeChanges();
+
+  // Same files, same rules: nothing written, nothing to report.
+  const newRules = (p) => (/kick/i.test(p) ? ['boom'] : ['other']);
+  db.syncFolder(f.id, files, newRules, { rulesHash: 'v1' });
+  assert.deepStrictEqual(tagsOf(), { 'Kick.wav': ['kick'], 'Kick 2.wav': ['mine'], 'Other.wav': [] });
+  assert.strictEqual(db.takeChanges(), null);
+
+  // A changed file is re-tagged even with the same rules.
+  db.syncFolder(f.id, [files[0], files[1], { ...files[2], size: 2 }], newRules, { rulesHash: 'v1' });
+  assert.deepStrictEqual(tagsOf()['Other.wav'], ['other']);
+  assert.deepStrictEqual(db.takeChanges().dirs, [{ folderId: f.id, dir: '/i', delta: 0 }]);
+
+  // New rules: every file re-tagged, hand-edited ones left alone.
+  db.syncFolder(f.id, files, newRules, { rulesHash: 'v2' });
+  assert.deepStrictEqual(tagsOf(), { 'Kick.wav': ['boom'], 'Kick 2.wav': ['mine'], 'Other.wav': ['other'] });
+  assert.ok(db.takeChanges().all);
+  db.removeFolder(f.id);
+});
+
+test('change log: per-directory deltas and the version listDirs reports', () => {
+  const f = db.addFolder('/c', 'c');
+  db.takeChanges();
+  const files = ['a/1.wav', 'a/2.wav', 'b/3.wav'].map((p) => ({ path: `/c/${p}`, size: 1, mtime: 1 }));
+  db.syncFolder(f.id, files, () => [], { rulesHash: 'x' });
+  let c = db.takeChanges();
+  assert.deepStrictEqual(c.dirs.map((d) => [d.dir, d.delta]), [['/c/a', 2], ['/c/b', 1]]);
+  assert.strictEqual(db.listDirs().version, c.to);
+
+  db.movePath('/c/a/1.wav', '/c/b/1.wav', f.id, []);
+  db.removePath('/c/a/2.wav');
+  db.removePath('/c/nothing.wav'); // not in the library: no change
+  c = db.takeChanges();
+  assert.deepStrictEqual(c.dirs.map((d) => [d.dir, d.delta]), [['/c/a', -2], ['/c/b', 1]]);
+  assert.deepStrictEqual(db.listDirs().dirs.filter((d) => d.folderId === f.id).map((d) => [d.dir, d.n]), [['/c/b', 2]]);
+
+  db.removeDir('/c/b');
+  assert.deepStrictEqual(db.takeChanges().dirs, [{ folderId: f.id, dir: '/c/b', delta: -2 }]);
+  db.hideDir('/c/x');
+  assert.ok(db.takeChanges().all);
+  db.removeFolder(f.id);
+});
+
+test('chunked async sync matches, and keeps rows added while the walk ran', async () => {
+  const f = db.addFolder('/big', 'big');
+  const files = Array.from({ length: 4500 }, (_, i) => ({ path: `/big/d${i % 7}/s${i}.wav`, size: i, mtime: 1 }));
+  await db.syncFolderAsync(f.id, files, (p) => (p.endsWith('0.wav') ? ['zero'] : []), { rulesHash: 'r' });
+  assert.strictEqual(db.listSamples({ dirs: ['/big'] }).rows.length, 4500);
+  assert.strictEqual(db.listSamples({ dirs: ['/big'], tags: ['zero'] }).rows.length, 450);
+
+  // A walk that started before this file was added (by the watcher) doesn't list it.
+  await new Promise((r) => setTimeout(r, 5));
+  const startedAt = Date.now();
+  await new Promise((r) => setTimeout(r, 5));
+  db.upsertFile(f.id, { path: '/big/new.wav', size: 1, mtime: 1 }, []);
+  await db.syncFolderAsync(f.id, files.slice(1), () => [], { rulesHash: 'r', startedAt });
+  const paths = new Set(db.listSamples({ dirs: ['/big'] }).rows.map((r) => r.path));
+  assert.strictEqual(paths.size, 4500);
+  assert.ok(paths.has('/big/new.wav'));
+  assert.ok(!paths.has('/big/d0/s0.wav'));
+  db.removeFolder(f.id);
+});

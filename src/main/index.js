@@ -36,10 +36,15 @@ function send(channel, ...args) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, ...args);
 }
 
+// Tell the page what changed in the library (see db.takeChanges) — nothing
+// if nothing did, e.g. a rescan that found every file as it was.
 let changeTimer = null;
 function notifyChanged() {
   clearTimeout(changeTimer);
-  changeTimer = setTimeout(() => send('library:changed'), 150);
+  changeTimer = setTimeout(() => {
+    const changes = db.takeChanges();
+    if (changes) send('library:changed', changes);
+  }, 150);
 }
 
 // --- scanning (serialized so two walks never race on the same rows) --------
@@ -89,6 +94,7 @@ function warnUnreadable(folder, err) {
 
 function scanFolder(folder) {
   return enqueueScan(`Scanning ${folder.label}…`, async () => {
+    const startedAt = Date.now();
     let files;
     try {
       files = await scanner.walk(folder.path);
@@ -98,7 +104,12 @@ function scanFolder(folder) {
       return; // leave its rows (and tags) untouched
     }
     if (!db.getFolder(folder.id)) return; // removed mid-scan
-    db.syncFolder(folder.id, files, (p) => scanner.tagsFor(path.relative(folder.path, p), p));
+    // Only new and changed files are written (and everything re-tagged if
+    // tag-rules.json changed), a chunk at a time between other work.
+    await db.syncFolderAsync(folder.id, files, (p) => scanner.tagsFor(path.relative(folder.path, p), p), {
+      rulesHash: scanner.rulesHash(),
+      startedAt,
+    });
   });
 }
 
