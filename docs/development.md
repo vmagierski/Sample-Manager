@@ -9,6 +9,18 @@ npm test           # unit tests (run under Electron's Node)
 SM_USER_DATA=/tmp/sm-test npm start   # use a throwaway library
 ```
 
+## Benchmarks
+
+```sh
+npm run bench                  # builds the bench library on first run, then times it
+npm run bench -- --json        # machine-readable results
+npm run bench -- --skip-large --skip-scan --runs 3
+```
+
+`scripts/make-bench-library.js` (also `npm run bench:make`) builds a throwaway library in `$TMPDIR/sm-bench` (or `--dir` / `SM_BENCH_DIR`): a `library.db` with ~750k samples in realistic packs, tagged by `tag-rules.json` (the paths exist only in the database); a real `tree/` of ~30k small WAVs for scan timing; and `large/` with a 30-minute WAV, the same audio as AIFF and ALAC CAF, and a 10-minute AAC CAF. Each part is only built if missing; `--force` rebuilds, and `--samples`, `--tree-files` and `--large-min` change the sizes.
+
+`scripts/bench.js` times main-list queries and searches (SQL plus the cost of cloning the rows to the renderer), `listDirs` and `listTags` (with and without a hidden folder), a first scan and an unchanged rescan of `tree/`, and `readPlayable` / `cropToWav` on each large file, each in its own process for a clean peak memory figure. Each line is compared with a target (50 ms for list queries, 100 ms for an unchanged `syncFolder`, 150 ms and 1 GB for the large files). Misses are reported, not failed: it's a measuring tool, not part of `npm test`.
+
 ## Installing as a Mac app
 
 ```sh
