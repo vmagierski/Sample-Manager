@@ -22,6 +22,10 @@ A fast, keyboard-driven sample browser for macOS. Point it at your sample folder
 
 ![Typing /vint to pick a folder from the suggestions](docs/media/folder-picker.png)
 
+## Demo
+
+![Demo: searching, filtering with chips, cropping and looping, Quick Search and Last 10s](docs/media/demo.gif)
+
 ## Getting started
 
 Sample Manager runs on macOS (Apple Silicon). There's no downloadable build yet — build it from source:
