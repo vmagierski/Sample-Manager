@@ -1828,20 +1828,13 @@ function flash(msg) {
 
 // --- random -------------------------------------------------------------------------
 
-// Pick from the whole (non-hidden) library: clear filters first, as one Back step.
-async function randomSample() {
-  recordNav('random');
-  const f = state.filter;
-  if (f.search || f.queries.length || f.tags.size || f.untagged || f.dirs.size) {
-    if (state.editing) cancelEdit();
-    clearTimeout(searchTimer);
-    state.filter = { search: '', queries: [], tags: new Set(), untagged: false, dirs: new Set() };
-    ui.search.value = '';
-    renderRail();
-    await refreshList({ reset: true });
-  }
+// Random pick from what's listed: whatever the current search / tags /
+// folders match, or — with no filters — the whole (non-hidden) library.
+// A Back step, so ⌘[ returns to the previous sample.
+function randomSample() {
   const n = state.rows.length;
   if (!n) return;
+  recordNav('random');
   let i = Math.floor(Math.random() * n);
   if (i === state.cursor && n > 1) i = (i + 1) % n;
   selectSingle(i);

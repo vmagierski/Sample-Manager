@@ -58,7 +58,7 @@ Active filters are always visible: tags and kept searches show as chips in the s
 
 **Crop:** drag across the player waveform to select part of a sample (drag the edges to resize, drag inside to move it, click outside or double-click to clear). Drag the top edge of the player to make the waveform taller. Playback stays inside the crop and **Loop** switches on (it's off by default; on without a crop it loops the whole sample), the row gets a ✂, and dragging the sample into your DAW drags just that part — a WAV saved to `~/Music/Sample Manager/Crops` (tagged *crop*). WAV/AIFF crops are cut losslessly in the original format; other formats become 24-bit WAV. Crops last for the session.
 
-**R** or ⤮ Random plays a random sample from the whole library. **● Rec** records what plays; **⟲ Last 10s** saves the last 10 seconds you heard. Both save 24-bit WAVs to `~/Music/Sample Manager/Recordings` by default (created and added to the library on first launch).
+**R** or ⤮ Random plays a random sample from whatever the current filters show (search, tags, folders) — or from the whole library when nothing is filtered. **● Rec** records what plays; **⟲ Last 10s** saves the last 10 seconds you heard. Both save 24-bit WAVs to `~/Music/Sample Manager/Recordings` by default (created and added to the library on first launch).
 
 Click selects and auditions; ⌘-click / Shift-click multi-select; click a row's tag cell to edit. Drag any row (or the whole selection) into your DAW. Right-click a sample for Show in Finder / Copy Path / Show in Sidebar / Edit Tags, or a sidebar folder for Show in Finder.
 
