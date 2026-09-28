@@ -55,9 +55,14 @@ CREATE TABLE IF NOT EXISTS hidden_dirs (
 //   as trigrams (any substring of 3+ characters is an index lookup; shorter
 //   ones go through the index's vocabulary, see searchMatch). Each column
 //   ends in two newlines — no search term holds one — so every character of
-//   the real text starts a trigram. Rows are written by indexSample; deleting
-//   a sample deletes its row (trigger).
-// - tags.n, counters: samples per tag, samples, samples with any tag (triggers).
+//   the real text starts a trigram. Rows are written by indexSample/reindexMany;
+//   deleting a sample deletes its row (trigger).
+// - tags.n, counters: samples per tag, samples, samples with any tag. Removing
+//   a tag link is rare next to adding one, so DELETE stays a trigger (also
+//   covers cascades from a deleted sample); adding one is the scan's hot
+//   path, so it's counted in JS instead (see bumpTag, gainedFirstTag) — a trigger
+//   there interleaves tiny writes to `tags`/`counters` with every tag insert
+//   and was the biggest single cost in a first scan.
 // - dir_counts: samples per directory, for the folder tree (see changedFile).
 // - idx_samples_name: the default order, name then path (see nameOrder).
 // - idx_sample_tags_tag, now with the sample: a tag's samples from the index alone.
@@ -81,11 +86,9 @@ CREATE TRIGGER samples_uncounted AFTER DELETE ON samples BEGIN
   UPDATE counters SET n = n - 1 WHERE name = 'samples';
   DELETE FROM sample_search WHERE rowid = OLD.id;
 END;
-CREATE TRIGGER sample_tags_counted AFTER INSERT ON sample_tags BEGIN
-  UPDATE tags SET n = n + 1 WHERE id = NEW.tag_id;
-  UPDATE counters SET n = n + 1 WHERE name = 'tagged'
-    AND (SELECT count(*) FROM sample_tags WHERE sample_id = NEW.sample_id) = 1;
-END;
+-- Insert side of tag counting is done in JS (bumpTag, gainedFirstTag): see the
+-- comment above SEARCH_SCHEMA. Delete stays a trigger, so cascades (a
+-- deleted sample taking its tags with it) and bulk deletes are covered too.
 CREATE TRIGGER sample_tags_uncounted AFTER DELETE ON sample_tags BEGIN
   UPDATE tags SET n = n - 1 WHERE id = OLD.tag_id;
   UPDATE counters SET n = n - 1 WHERE name = 'tagged'
@@ -123,7 +126,7 @@ const MIGRATIONS = [
     d.exec(`
       DROP TRIGGER IF EXISTS samples_counted;
       DROP TRIGGER IF EXISTS samples_uncounted;
-      DROP TRIGGER IF EXISTS sample_tags_counted;
+      DROP TRIGGER IF EXISTS sample_tags_counted; -- an earlier build of this migration made one; SEARCH_SCHEMA doesn't any more
       DROP TRIGGER IF EXISTS sample_tags_uncounted;
       DROP TABLE IF EXISTS sample_search;
       DROP TABLE IF EXISTS counters;
@@ -143,7 +146,6 @@ function open(file) {
   db = new Database(file);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
-  if (process.env.X_CACHE) db.pragma(`cache_size = ${process.env.X_CACHE}`);
   db.function('sm_dirname', { deterministic: true }, dirOf);
   db.exec(SCHEMA);
   const version = db.pragma('user_version', { simple: true });
@@ -219,6 +221,10 @@ function open(file) {
       WHERE s.id IN (SELECT value FROM json_each(?))`),
     searchDelete: db.prepare('DELETE FROM sample_search WHERE rowid = ?'),
     searchInsert: db.prepare(searchRows('WHERE s.id = ?')),
+    // Batched versions, for reindexMany: one statement for a whole chunk of
+    // ids instead of one per sample — see the comment above SEARCH_SCHEMA.
+    searchDeleteMany: db.prepare('DELETE FROM sample_search WHERE rowid IN (SELECT value FROM json_each(?))'),
+    searchInsertMany: db.prepare(searchRows('WHERE s.id IN (SELECT value FROM json_each(?))')),
     vocab: db.prepare('SELECT term FROM temp.search_vocab WHERE term >= ? AND term < ?').pluck(),
     dirCount: db.prepare(`
       INSERT INTO dir_counts (folder_id, dir, n) VALUES (?, ?, ?)
@@ -241,6 +247,10 @@ function open(file) {
     deleteTagLinks: db.prepare('DELETE FROM sample_tags WHERE tag_id = ?'),
     deleteTag: db.prepare('DELETE FROM tags WHERE id = ?'),
     ensureTag: db.prepare('INSERT OR IGNORE INTO tags (name) VALUES (?)'),
+    // Insert-side counting (see bumpTag, gainedFirstTag): a tag gaining/losing a
+    // sample, and the untagged↔tagged crossing, deferred to the end of a batch.
+    bumpTagN: db.prepare('UPDATE tags SET n = n + ? WHERE id = ?'),
+    bumpTagged: db.prepare("UPDATE counters SET n = n + ? WHERE name = 'tagged'"),
     // Every tag, including ones no sample currently has (count 0) — tags only
     // go away when deleted on purpose (deleteTag).
     tagCounts: db.prepare('SELECT name, n AS count FROM tags ORDER BY name'),
@@ -257,11 +267,11 @@ function close() {
 }
 
 // Every write in one transaction (nested ones become savepoints), with the
-// directory counts it changed.
+// directory and tag counts it changed.
 function batch(fn) {
   return db.transaction(() => {
     const out = fn();
-    flushDirCounts();
+    flushCounts();
     return out;
   })();
 }
@@ -310,13 +320,37 @@ function changedFile(folderId, p, delta) {
   bump();
 }
 
-function flushDirCounts() {
+// tags.n and the 'tagged' counter, insert side (see the comment above
+// SEARCH_SCHEMA): accumulated in JS instead of a trigger, and written once
+// per batch, same as dirDeltas above.
+const tagDeltas = new Map(); // tagId -> delta, until the batch ends
+let taggedDelta = 0;
+
+// A sample went from no tags to having one — losing its last tag is still a
+// trigger (see sample_tags_uncounted), so this side only ever adds.
+function gainedFirstTag() {
+  taggedDelta++;
+}
+
+function bumpTag(tagId, delta) {
+  tagDeltas.set(tagId, (tagDeltas.get(tagId) || 0) + delta);
+}
+
+function flushCounts() {
   for (const { folderId, dir, delta } of dirDeltas.values()) {
     if (!delta) continue;
     q.dirCount.run(folderId, dir, delta);
     if (delta < 0) q.dirCountGone.run(folderId, dir);
   }
   dirDeltas.clear();
+  for (const [tagId, delta] of tagDeltas) {
+    if (delta) q.bumpTagN.run(delta, tagId);
+  }
+  tagDeltas.clear();
+  if (taggedDelta) {
+    q.bumpTagged.run(taggedDelta);
+    taggedDelta = 0;
+  }
 }
 
 function changedAll() {
@@ -354,33 +388,65 @@ function indexSample(sampleId, fresh = false) {
   q.searchInsert.run(sampleId);
 }
 
+// Same, for many samples at once — syncFolder's hot path and deleteTag,
+// where writing one row at a time to the FTS index interleaved with the
+// samples/sample_tags writes was the single biggest cost in a first scan
+// (each write touches very different parts of the file). `freshIds` never
+// had a row; `dirtyIds` did and need it replaced.
+function reindexMany(freshIds, dirtyIds) {
+  if (dirtyIds.length) q.searchDeleteMany.run(JSON.stringify(dirtyIds));
+  const ids = dirtyIds.length ? freshIds.concat(dirtyIds) : freshIds;
+  if (ids.length) q.searchInsertMany.run(JSON.stringify(ids));
+}
+
 // Make a sample's auto tags these (a tag it has by hand stays by hand).
-// Writes only what differs; true if anything did.
+// Writes only what differs; true if anything did. Counts tags.n and the
+// tagged↔untagged crossing itself (see bumpTag, gainedFirstTag) — losing the
+// last tag is still caught by the sample_tags_uncounted trigger.
 function applyAutoTags(sampleId, names, fresh = false) {
   const want = new Set(names.map(normalizeTag).filter(Boolean));
   let changed = false;
+  let has = false; // does the sample have a tag right now, as far as we've gone
   if (!fresh) {
-    for (const t of q.sampleTagIds.all(sampleId)) {
+    const current = q.sampleTagIds.all(sampleId);
+    let remaining = current.length;
+    for (const t of current) {
       if (want.delete(t.name)) continue; // has it already
       if (t.source !== 'auto') continue;
       q.deleteSampleTag.run(sampleId, t.id);
+      remaining--;
       changed = true;
     }
+    has = remaining > 0;
   }
   for (const name of want) {
-    q.addSampleTag.run(sampleId, tagIdFor(name), 'auto');
+    const tagId = tagIdFor(name);
+    q.addSampleTag.run(sampleId, tagId, 'auto');
+    bumpTag(tagId, 1);
+    if (!has) {
+      gainedFirstTag();
+      has = true;
+    }
     changed = true;
   }
   return changed;
 }
 
 const setTags = (sampleId, names) => batch(() => {
-  const current = new Map(q.sampleTags.all(sampleId).map((t) => [t.name, t.source]));
+  const current = q.sampleTagIds.all(sampleId);
+  const source = new Map(current.map((t) => [t.name, t.source]));
   const wanted = [...new Set(names.map(normalizeTag).filter(Boolean))];
-  q.deleteAllTags.run(sampleId);
+  q.deleteAllTags.run(sampleId); // the trigger counts these out (tags.n, tagged)
+  let has = false;
   for (const name of wanted) {
     // An auto tag you kept stays 'auto'; anything new is 'manual'.
-    q.addSampleTag.run(sampleId, tagIdFor(name), current.get(name) === 'auto' ? 'auto' : 'manual');
+    const tagId = tagIdFor(name);
+    q.addSampleTag.run(sampleId, tagId, source.get(name) === 'auto' ? 'auto' : 'manual');
+    bumpTag(tagId, 1);
+    if (!has) {
+      gainedFirstTag();
+      has = true;
+    }
   }
   q.setEdited.run(sampleId);
   indexSample(sampleId);
@@ -421,9 +487,9 @@ const deleteTag = (name) => batch(() => {
   const row = q.tagId.get(normalizeTag(name));
   if (!row) return false;
   const had = q.tagSamples.all(row.id);
-  q.deleteTagLinks.run(row.id);
+  q.deleteTagLinks.run(row.id); // the trigger counts these out (tags.n, moot; tagged)
   q.deleteTag.run(row.id);
-  for (const id of had) indexSample(id);
+  reindexMany([], had);
   changedAll();
   return true;
 });
@@ -502,13 +568,19 @@ function sampleParams(folderId, file) {
   };
 }
 
-// Upsert one file and (unless hand-edited) re-derive its auto tags.
-function upsertOne(folderId, file, autoTags) {
+// Upsert one file and (unless hand-edited) re-derive its auto tags. `pending`
+// (syncSteps' hot path): collect the id for a batched reindex instead of
+// writing its search row right away — see reindexMany.
+function upsertOne(folderId, file, autoTags, pending) {
   const prev = q.folderIdByPath.get(file.path);
   const row = q.upsertSample.get(sampleParams(folderId, file));
-  const retagged = !row.tags_edited && applyAutoTags(row.id, autoTags, !prev);
+  const fresh = !prev;
+  const retagged = !row.tags_edited && applyAutoTags(row.id, autoTags, fresh);
   // New, re-tagged, or its path below the folder changed (absorbed by a parent).
-  if (!prev || retagged || prev.folderId !== folderId) indexSample(row.id, !prev);
+  if (fresh || retagged || prev.folderId !== folderId) {
+    if (pending) (fresh ? pending.fresh : pending.dirty).push(row.id);
+    else indexSample(row.id, fresh);
+  }
   if (prev && prev.folderId !== folderId) changedFile(prev.folderId, file.path, -1); // absorbed by a parent folder
   changedFile(folderId, file.path, prev && prev.folderId === folderId ? 0 : 1);
   return row.id;
@@ -516,8 +588,10 @@ function upsertOne(folderId, file, autoTags) {
 
 const upsertFile = (folderId, file, autoTags) => batch(() => upsertOne(folderId, file, autoTags));
 
-// Files per transaction in syncFolder.
-const CHUNK = 2000;
+// Files per transaction in syncFolder — small enough that one chunk's
+// transaction (upserts, tag/search reindexing, counts) stays well under the
+// 50 ms budget for a blocked event loop, even during a first scan.
+const CHUNK = 500;
 
 // Make the DB match a fresh walk of one folder: add new files, update changed
 // ones, drop rows for files that no longer exist. Files with the same size and
@@ -543,16 +617,18 @@ function* syncSteps(folderId, files, tagsFor, { rulesHash, startedAt = Infinity 
   for (let i = 0; i < files.length; i += CHUNK) {
     if (!q.getFolder.get(folderId)) return; // removed mid-sync
     batch(() => {
+      const pending = { fresh: [], dirty: [] }; // reindexed once, after the chunk (see reindexMany)
       for (const file of files.slice(i, i + CHUNK)) {
         const row = known.get(file.path);
         known.delete(file.path);
         if (!row || row.size !== file.size || row.mtime !== file.mtime) {
-          upsertOne(folderId, file, tagsFor(file.path));
+          upsertOne(folderId, file, tagsFor(file.path), pending);
         } else if (retag && !row.edited && applyAutoTags(row.id, tagsFor(file.path))) {
-          indexSample(row.id);
+          pending.dirty.push(row.id);
           retagged++;
         }
       }
+      reindexMany(pending.fresh, pending.dirty);
     });
     yield;
   }

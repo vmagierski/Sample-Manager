@@ -232,6 +232,11 @@ test('chunked async sync matches, and keeps rows added while the walk ran', asyn
   await db.syncFolderAsync(f.id, files, (p) => (p.endsWith('0.wav') ? ['zero'] : []), { rulesHash: 'r' });
   assert.strictEqual(db.listSamples({ dirs: ['/big'] }).rows.length, 4500);
   assert.strictEqual(db.listSamples({ dirs: ['/big'], tags: ['zero'] }).rows.length, 450);
+  // Stored counts and the search index both span every chunk of the sync
+  // (CHUNK is well under 4500), not just the first one.
+  assert.strictEqual(db.listTags().tags.find((t) => t.name === 'zero').count, 450);
+  assert.strictEqual(db.listSamples({ dirs: ['/big'], search: 'wav' }).rows.length, 4500);
+  assert.strictEqual(db.listSamples({ dirs: ['/big'], search: 's4499' }).rows.length, 1);
 
   // A walk that started before this file was added (by the watcher) doesn't list it.
   await new Promise((r) => setTimeout(r, 5));
@@ -243,5 +248,15 @@ test('chunked async sync matches, and keeps rows added while the walk ran', asyn
   assert.strictEqual(paths.size, 4500);
   assert.ok(paths.has('/big/new.wav'));
   assert.ok(!paths.has('/big/d0/s0.wav'));
+
+  // New rules, nothing else changed: every unchanged file goes through the
+  // retag branch (not upsertOne), still batched per chunk — see reindexMany.
+  const same = [...files.slice(1), { path: '/big/new.wav', size: 1, mtime: 1 }];
+  const nine = same.filter((file) => file.path.endsWith('9.wav'));
+  await db.syncFolderAsync(f.id, same, (p) => (p.endsWith('9.wav') ? ['nine'] : []), { rulesHash: 'r2' });
+  assert.strictEqual(db.listTags().tags.find((t) => t.name === 'nine').count, nine.length);
+  assert.strictEqual(db.listTags().tags.find((t) => t.name === 'zero').count, 0); // dropped everywhere
+  assert.strictEqual(db.listSamples({ dirs: ['/big'], search: 'wav' }).rows.length, 4500); // still every row
+
   db.removeFolder(f.id);
 });
