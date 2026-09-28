@@ -1,15 +1,11 @@
 const fs = require('fs');
 const path = require('path');
 const { app, BrowserWindow, ipcMain, dialog, Menu, shell, clipboard } = require('electron');
-const db = require('./db');
-const scanner = require('./scanner');
 const drag = require('./drag');
-const { LibraryWatcher } = require('./watcher');
-const { readPlayable } = require('./audio');
-const convcache = require('./convcache');
-const { latestWins } = require('./latest');
 const crop = require('./crop');
 const quick = require('./quick');
+const library = require('./library');
+const lookup = require('./lookup');
 
 // Same library for `npm start` and the installed .app (whose productName would
 // otherwise give it a different userData folder). Override for a throwaway
@@ -29,53 +25,24 @@ if (app.isPackaged && !fs.existsSync(RULES_PATH)) {
 const CONVERTED_DIR = process.env.SM_CACHE_DIR || path.join(app.getPath('home'), 'Library', 'Caches', 'Sample Manager', 'Converted');
 const CONVERTED_CAP = 2 * 1024 ** 3;
 
+// ~/Music/Sample Manager is the app's own folder; Rec / Recall save into its
+// Recordings subfolder by default. It's added to the library once (by the
+// worker), so saved files are indexed (and tagged "recorded" by
+// tag-rules.json) automatically.
+const APP_MUSIC_DIR = path.join(app.getPath('home'), 'Music', 'Sample Manager');
+const RECORD_DIR = path.join(APP_MUSIC_DIR, 'Recordings');
+
+const DB_FILE = path.join(app.getPath('userData'), 'library.db');
+
 let win = null;
-let watcher = null;
 
 function send(channel, ...args) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, ...args);
 }
 
-// Tell the page what changed in the library (see db.takeChanges) — nothing
-// if nothing did, e.g. a rescan that found every file as it was.
-let changeTimer = null;
-function notifyChanged() {
-  clearTimeout(changeTimer);
-  changeTimer = setTimeout(() => {
-    const changes = db.takeChanges();
-    if (changes) send('library:changed', changes);
-  }, 150);
-}
-
-// --- scanning (serialized so two walks never race on the same rows) --------
-
-let scanQueue = Promise.resolve();
-let scansPending = 0;
-
-function enqueueScan(label, fn) {
-  scansPending++;
-  send('scan:status', { busy: true, label });
-  const run = scanQueue.then(fn).catch((err) => console.error(`${label} failed:`, err));
-  scanQueue = run.finally(() => {
-    scansPending--;
-    send('scan:status', scansPending ? { busy: true, label: 'Scanning…' } : { busy: false });
-    notifyChanged();
-  });
-  return scanQueue;
-}
-
-// Folders we've already warned about this session.
-const blockedWarned = new Set();
-
-function warnUnreadable(folder, err) {
-  if (blockedWarned.has(folder.id)) return;
-  blockedWarned.add(folder.id);
-  const privacy = err.code === 'EPERM' || err.code === 'EACCES';
-  if (!privacy) {
-    // e.g. an unplugged drive: keep its samples, just say so in the status line.
-    send('scan:status', { busy: false, label: `${folder.label} is unavailable — kept its samples` });
-    return;
-  }
+// The library worker (library-worker.js) does the scanning; it asks main
+// only for what needs a dialog.
+library.on('unreadable', (folder) => {
   dialog
     .showMessageBox(win, {
       type: 'warning',
@@ -90,74 +57,14 @@ function warnUnreadable(folder, err) {
     .then(({ response }) => {
       if (response === 0) shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles');
     });
-}
+});
+library.on('rulesError', (message) => dialog.showErrorBox('tag-rules.json', `Couldn't load tag rules:\n${message}`));
 
-function scanFolder(folder) {
-  return enqueueScan(`Scanning ${folder.label}…`, async () => {
-    const startedAt = Date.now();
-    let files;
-    try {
-      files = await scanner.walk(folder.path);
-    } catch (err) {
-      console.warn(`scan: can't read ${folder.path}: ${err.message}`);
-      warnUnreadable(folder, err);
-      return; // leave its rows (and tags) untouched
-    }
-    if (!db.getFolder(folder.id)) return; // removed mid-scan
-    // Only new and changed files are written (and everything re-tagged if
-    // tag-rules.json changed), a chunk at a time between other work.
-    await db.syncFolderAsync(folder.id, files, (p) => scanner.tagsFor(path.relative(folder.path, p), p), {
-      rulesHash: scanner.rulesHash(),
-      startedAt,
-    });
-  });
-}
-
-function loadRules() {
-  try {
-    scanner.loadRules(RULES_PATH);
-    db.ensureTags(scanner.ruleTags()); // rule tags always show, even with no samples yet
-  } catch (err) {
-    dialog.showErrorBox('tag-rules.json', `Couldn't load tag rules:\n${err.message}`);
-  }
-}
-
-function rescanAll() {
-  loadRules();
-  return Promise.all(db.listFolders().map(scanFolder));
-}
+const rescanAll = () => library.call('rescanAll').catch((err) => console.error('rescan failed:', err));
 
 // --- folders ----------------------------------------------------------------
 
-async function addFolderPath(picked) {
-  let real;
-  try {
-    real = fs.realpathSync(picked);
-  } catch (err) {
-    return { error: err.message };
-  }
-  const existing = db.listFolders();
-  const covering = existing.find((f) => real === f.path || real.startsWith(f.path + path.sep));
-  // Already in the library (itself, or inside a folder that is): not an
-  // error — rescan it (that's usually why it was re-added) and show it.
-  if (covering) {
-    scanFolder(covering);
-    return { existing: real };
-  }
-
-  const folder = db.addFolder(real, path.basename(real) || real);
-  watcher.watch(folder);
-  await scanFolder(folder);
-
-  // Adding a parent of an existing folder absorbs it. The scan above already
-  // re-pointed those samples at the parent (keeping their tags).
-  for (const child of existing.filter((f) => f.path.startsWith(real + path.sep))) {
-    await watcher.unwatch(child.id);
-    db.removeFolder(child.id);
-  }
-  notifyChanged();
-  return { folder };
-}
+const addFolderPath = (picked) => library.call('addFolderPath', picked).catch((err) => ({ error: err.message }));
 
 async function pickAndAddFolders() {
   const res = await dialog.showOpenDialog(win, {
@@ -180,7 +87,7 @@ async function pickAndAddFolders() {
 }
 
 async function removeFolder(id) {
-  const folder = db.getFolder(id);
+  const folder = lookup.getFolder(id);
   if (!folder) return false;
   const { response } = await dialog.showMessageBox(win, {
     type: 'question',
@@ -191,10 +98,7 @@ async function removeFolder(id) {
     detail: `${folder.path}\n\nFiles on disk are not touched, but tags you added to these samples will be lost.`,
   });
   if (response !== 0) return false;
-  await watcher.unwatch(id);
-  db.removeFolder(id);
-  notifyChanged();
-  return true;
+  return library.call('removeFolder', id);
 }
 
 // --- IPC ----------------------------------------------------------------------
@@ -202,23 +106,12 @@ async function removeFolder(id) {
 function registerIpc() {
   ipcMain.handle('folder:add', () => pickAndAddFolders());
   ipcMain.handle('folder:remove', (_e, id) => removeFolder(id));
-  ipcMain.handle('folders:list', () => db.listFolders());
-  ipcMain.handle('folders:dirs', () => db.listDirs());
-  ipcMain.handle('folders:hidden', () => db.listHidden());
   ipcMain.handle('recording:save', (_e, bytes, name) => saveRecording(bytes, name));
   ipcMain.handle('library:rescan', () => rescanAll());
   ipcMain.on('app:openMain', () => {
     quick.hide();
     openMainWindow();
   });
-  ipcMain.handle('samples:list', (_e, filter) => db.listSamples(filter));
-  ipcMain.handle('tags:list', () => db.listTags());
-  ipcMain.handle('samples:tag', (_e, id, tags) => {
-    const tagsOut = db.setTags(id, Array.isArray(tags) ? tags : []);
-    send('tags:changed');
-    return tagsOut;
-  });
-  ipcMain.handle('sample:duration', (_e, id, ms) => db.setDuration(id, ms));
   ipcMain.handle('crop:prepare', (_e, id, start, end) => crop.prepare(id, +start, +end));
   ipcMain.handle('crop:clear', (_e, id) => crop.clear(id));
   ipcMain.handle('crop:save', async (_e, id) => {
@@ -232,16 +125,8 @@ function registerIpc() {
     if (res.canceled || !res.filePath) return null;
     return crop.saveTo(id, res.filePath);
   });
-  // Newest wins per window: arrowing past a sample aborts its read or
-  // conversion, and resolves null instead of sending its bytes.
-  const readLatest = latestWins();
-  ipcMain.handle('sample:read', async (e, id) => {
-    const row = db.getById(id);
-    if (!row) throw new Error('unknown sample');
-    return readLatest(e.sender.id, id, (signal) => readPlayable(row.path, signal));
-  });
   ipcMain.handle('sample:reveal', (_e, id) => {
-    const row = db.getById(id);
+    const row = lookup.getById(id);
     if (row) shell.showItemInFolder(row.path);
   });
   ipcMain.on('sample:contextMenu', (e, ids) => sampleMenu(e.sender, ids));
@@ -253,29 +138,6 @@ function registerIpc() {
 
 // --- recordings -----------------------------------------------------------------
 
-// ~/Music/Sample Manager is the app's own folder; Rec / Recall save into its
-// Recordings subfolder by default. It's in the library, so saved files are
-// indexed (and tagged "recorded" by tag-rules.json) automatically.
-const APP_MUSIC_DIR = path.join(app.getPath('home'), 'Music', 'Sample Manager');
-const RECORD_DIR = path.join(APP_MUSIC_DIR, 'Recordings');
-
-// Once per library: create the folder and add it to the library. If you later
-// remove it from the library, it stays removed. (The marker lives with the
-// library, so a test library doesn't use up the real one's first run.)
-function ensureAppMusicDir() {
-  const marker = path.join(app.getPath('userData'), '.added-app-music-dir');
-  if (fs.existsSync(marker)) return;
-  try {
-    fs.mkdirSync(RECORD_DIR, { recursive: true });
-    const real = fs.realpathSync(APP_MUSIC_DIR);
-    const covered = db.listFolders().some((f) => real === f.path || real.startsWith(f.path + path.sep));
-    if (!covered) db.addFolder(real, 'Sample Manager');
-    fs.writeFileSync(marker, new Date().toISOString());
-  } catch (err) {
-    console.warn(`couldn't set up ${APP_MUSIC_DIR}:`, err.message);
-  }
-}
-
 async function saveRecording(bytes, name) {
   fs.mkdirSync(RECORD_DIR, { recursive: true });
   const safe = String(name || 'Recording.wav').replace(/[/:]/g, '-');
@@ -286,32 +148,16 @@ async function saveRecording(bytes, name) {
   });
   if (res.canceled || !res.filePath) return null;
   await fs.promises.writeFile(res.filePath, Buffer.from(bytes));
-  return { path: res.filePath, id: indexNow(res.filePath) };
-}
-
-// Add a file we just wrote to the library right away (the watcher would get
-// there too, but ~1s later), so the page can select it. Null if it was saved
-// outside every library folder.
-function indexNow(filePath) {
-  let real;
-  try {
-    real = fs.realpathSync(filePath);
-  } catch {
-    return null;
-  }
-  const folder = db.listFolders().find((f) => real.startsWith(f.path + path.sep));
-  if (!folder) return null;
-  const st = fs.statSync(real);
-  db.upsertFile(folder.id, { path: real, size: st.size, mtime: Math.round(st.mtimeMs) },
-    scanner.tagsFor(path.relative(folder.path, real), real));
-  notifyChanged();
-  return db.getByPath(real).id;
+  // Indexed right away (the watcher would get there too, but ~1s later), so
+  // the page can select it. Null id if it was saved outside the library.
+  const id = await library.call('indexNow', res.filePath).catch(() => null);
+  return { path: res.filePath, id };
 }
 
 // --- context menus --------------------------------------------------------------
 
 function sampleMenu(sender, ids) {
-  const rows = [].concat(ids || []).map((id) => db.getById(id)).filter(Boolean);
+  const rows = [].concat(ids || []).map((id) => lookup.getById(id)).filter(Boolean);
   if (!rows.length) return;
   const many = rows.length > 1;
   Menu.buildFromTemplate([
@@ -333,7 +179,7 @@ function tagMenu(sender, name) {
     {
       label: `Delete Tag “${name}”…`,
       click: async () => {
-        const inRules = scanner.ruleTags().map(db.normalizeTag).includes(db.normalizeTag(name));
+        const inRules = await library.call('isRuleTag', name).catch(() => false);
         const { response } = await dialog.showMessageBox(win, {
           type: 'warning',
           buttons: ['Delete Tag', 'Cancel'],
@@ -348,8 +194,7 @@ function tagMenu(sender, name) {
               : ''),
         });
         if (response !== 0) return;
-        db.deleteTag(name);
-        notifyChanged();
+        library.call('deleteTag', name).catch((err) => console.error('delete tag failed:', err));
       },
     },
   ]).popup({ window: BrowserWindow.fromWebContents(sender) });
@@ -373,26 +218,23 @@ function foldersMenu(sender, at, { expanded = false, selected = false } = {}) {
 function dirMenu(sender, dir) {
   // Only folders inside the library, not arbitrary paths from the renderer.
   if (typeof dir !== 'string') return;
-  const folders = db.listFolders();
+  const folders = lookup.listFolders();
   const inLibrary = folders.some((f) => dir === f.path || dir.startsWith(f.path + path.sep));
   if (!inLibrary) return;
   const root = folders.find((f) => f.path === dir);
-  const hidden = db.listHidden();
+  const hidden = lookup.listHidden();
   const isHidden = hidden.includes(dir);
   const parentHidden = hidden.some((h) => dir.startsWith(h + path.sep));
-  const changed = (fn) => () => {
-    fn();
-    notifyChanged();
-  };
+  const changed = (method) => () => library.call(method, dir).catch((err) => console.error(`${method} failed:`, err));
   const template = [
     { label: 'Show in Finder', enabled: fs.existsSync(dir), click: () => shell.openPath(dir) },
     { label: 'Copy Path', click: () => clipboard.writeText(dir) },
     { type: 'separator' },
     isHidden
-      ? { label: 'Unhide', click: changed(() => db.unhideDir(dir)) }
+      ? { label: 'Unhide', click: changed('unhideDir') }
       : parentHidden
         ? { label: 'Hidden (inside a hidden folder)', enabled: false }
-        : { label: 'Hide from Library', click: changed(() => db.hideDir(dir)) },
+        : { label: 'Hide from Library', click: changed('hideDir') },
   ];
   if (root) template.push({ label: 'Remove from Library…', click: () => removeFolder(root.id) });
   Menu.buildFromTemplate(template).popup({ window: BrowserWindow.fromWebContents(sender) });
@@ -470,6 +312,21 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+// Every page (main window, Quick Search) gets a port to the library worker,
+// and is reloaded if its renderer crashes rather than left blank — but not in
+// a loop: one that dies again within 10 s stays down.
+function connectPage(wc) {
+  library.connectWindow(wc);
+  let lastReload = 0;
+  wc.on('render-process-gone', (_e, { reason }) => {
+    if (reason === 'clean-exit' || wc.isDestroyed()) return;
+    if (Date.now() - lastReload < 10e3) return console.error(`page crashed again (${reason}); not reloading`);
+    lastReload = Date.now();
+    console.error(`page crashed (${reason}); reloading`);
+    wc.reload();
+  });
+}
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1200,
@@ -486,6 +343,7 @@ function createWindow() {
       autoplayPolicy: 'no-user-gesture-required',
     },
   });
+  connectPage(win.webContents);
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
   win.on('closed', () => {
     win = null;
@@ -525,17 +383,22 @@ if (!app.requestSingleInstanceLock()) app.exit(0);
 app.on('second-instance', () => openMainWindow());
 
 app.whenReady().then(() => {
-  db.open(path.join(app.getPath('userData'), 'library.db'));
-  loadRules();
-  ensureAppMusicDir();
+  // The database, scanning and watching live in the library worker; main
+  // only reads (lookup.js) for drags and menus.
+  lookup.open(DB_FILE);
+  library
+    .init({
+      dbFile: DB_FILE,
+      rulesPath: RULES_PATH,
+      cacheDir: CONVERTED_DIR,
+      cacheCap: CONVERTED_CAP,
+      appMusicDir: APP_MUSIC_DIR,
+      recordDir: RECORD_DIR,
+      appMusicMarker: path.join(app.getPath('userData'), '.added-app-music-dir'),
+    })
+    .catch((err) => console.error('library worker failed to start:', err));
   crop.prune(); // dragged crops are only kept for a week
-  try {
-    convcache.configure(CONVERTED_DIR, CONVERTED_CAP);
-  } catch (err) {
-    console.warn(`conversion cache off: ${err.message}`); // CAFs still play, just converted each time
-  }
   setInterval(() => crop.prune(), 86400e3).unref();
-  watcher = new LibraryWatcher({ onChange: notifyChanged });
   registerIpc();
   // Quick Search first, then the main window (setting the panel up can touch
   // window visibility on macOS).
@@ -544,6 +407,7 @@ app.whenReady().then(() => {
     rendererDir: path.join(__dirname, '..', 'renderer'),
     openMain: openInMain,
     openMainWindow,
+    connectPage,
   });
   buildMenu();
   // Opened at login (or SM_START_HIDDEN): start quietly in the menu bar.
@@ -551,12 +415,6 @@ app.whenReady().then(() => {
   const atLogin = process.platform === 'darwin' && app.getLoginItemSettings().wasOpenedAtLogin;
   if (atLogin || process.env.SM_START_HIDDEN) setDockPresence(false);
   else openMainWindow();
-
-  // Catch anything that changed while the app was closed, then keep watching.
-  for (const folder of db.listFolders()) {
-    watcher.watch(folder);
-    scanFolder(folder);
-  }
 
   // Launching the app again (Spotlight, Finder, Launchpad) while it runs in
   // the menu bar: macOS sends a "reopen" → 'activate' → show the window.
@@ -571,11 +429,11 @@ app.on('window-all-closed', () => {});
 
 // Quit in one go. (Cancelling the first quit to await async cleanup and then
 // re-quitting got swallowed when quitting from the menu-bar menu, so it took
-// two Quits.) Watchers stop immediately, without waiting; the database closes
-// once every window is gone.
+// two Quits.) The worker is told to stop watching and close the database,
+// without waiting for it.
 app.on('before-quit', () => {
   quick.dispose();
   crop.clearAll();
-  if (watcher) watcher.closeAll().catch(() => {});
+  library.shutdown();
 });
-app.on('will-quit', () => db.close());
+app.on('will-quit', () => lookup.close());

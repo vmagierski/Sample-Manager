@@ -6,19 +6,34 @@ function subscribe(channel, cb) {
   return () => ipcRenderer.removeListener(channel, listener);
 }
 
-contextBridge.exposeInMainWorld('sm', {
+// The page's port to the library worker comes from main (on every page load
+// and whenever the worker restarts). A MessagePort can't cross the context
+// bridge, so it's posted to the page — once the page has asked, so its
+// listener exists (see renderer/library.js, which builds window.sm).
+let port = null;
+let wanted = false;
+function passPort() {
+  if (!wanted || !port) return;
+  window.postMessage('sm:libraryPort', '*', [port]);
+  port = null;
+}
+ipcRenderer.on('library:port', (e) => {
+  port = e.ports[0];
+  passPort();
+});
+window.addEventListener('message', (e) => {
+  if (e.source !== window || e.data !== 'sm:wantPort') return;
+  wanted = true;
+  passPort();
+});
+
+// What goes through main: dialogs, menus, drag, windows. The library itself
+// (lists, tags, sample bytes, change events) is on the worker port.
+contextBridge.exposeInMainWorld('smMain', {
   addFolder: () => ipcRenderer.invoke('folder:add'),
   removeFolder: (id) => ipcRenderer.invoke('folder:remove', id),
-  listFolders: () => ipcRenderer.invoke('folders:list'),
-  listDirs: () => ipcRenderer.invoke('folders:dirs'),
-  listHidden: () => ipcRenderer.invoke('folders:hidden'),
   saveRecording: (bytes, name) => ipcRenderer.invoke('recording:save', bytes, name),
   rescan: () => ipcRenderer.invoke('library:rescan'),
-  listSamples: (filter) => ipcRenderer.invoke('samples:list', filter),
-  listTags: () => ipcRenderer.invoke('tags:list'),
-  updateTags: (id, tags) => ipcRenderer.invoke('samples:tag', id, tags),
-  setDuration: (id, ms) => ipcRenderer.invoke('sample:duration', id, ms),
-  readSample: (id) => ipcRenderer.invoke('sample:read', id),
   // ids: sample id(s); main resolves files (crops included) and supplies the
   // (required, non-empty) drag icon.
   startDrag: (ids) => ipcRenderer.send('sample:startDrag', ids),
@@ -41,7 +56,4 @@ contextBridge.exposeInMainWorld('sm', {
   foldersMenu: (at, state) => ipcRenderer.send('rail:foldersMenu', at, state),
   onFoldersCommand: (cb) => subscribe('ui:folders', cb),
   onUndo: (cb) => subscribe('ui:undo', cb),
-  onLibraryChanged: (cb) => subscribe('library:changed', cb),
-  onTagsChanged: (cb) => subscribe('tags:changed', cb),
-  onScanStatus: (cb) => subscribe('scan:status', cb),
 });
