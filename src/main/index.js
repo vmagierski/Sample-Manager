@@ -121,7 +121,12 @@ async function addFolderPath(picked) {
   }
   const existing = db.listFolders();
   const covering = existing.find((f) => real === f.path || real.startsWith(f.path + path.sep));
-  if (covering) return { error: `Already in your library via ${covering.path}` };
+  // Already in the library (itself, or inside a folder that is): not an
+  // error — rescan it (that's usually why it was re-added) and show it.
+  if (covering) {
+    scanFolder(covering);
+    return { existing: real };
+  }
 
   const folder = db.addFolder(real, path.basename(real) || real);
   watcher.watch(folder);
@@ -145,11 +150,14 @@ async function pickAndAddFolders() {
   if (res.canceled) return { added: [], errors: [] };
   const added = [];
   const errors = [];
+  let existing = null;
   for (const p of res.filePaths) {
     const r = await addFolderPath(p);
     if (r.error) errors.push(`${p}: ${r.error}`);
+    else if (r.existing) existing = r.existing;
     else added.push(r.folder);
   }
+  if (existing && win && !win.isDestroyed()) win.webContents.send('ui:showInSidebar', `${existing}/x`);
   if (errors.length) dialog.showMessageBox(win, { type: 'warning', message: 'Some folders were not added', detail: errors.join('\n') });
   return { added, errors };
 }

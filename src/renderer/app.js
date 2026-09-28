@@ -37,6 +37,7 @@ const ui = {
   tagChips: $('#tag-chips'),
   searchbox: $('#searchbox'),
   chips: $('#chips'),
+  suggest: $('#suggest'),
   list: $('#list'),
   spacer: $('#spacer'),
   rows: $('#rows'),
@@ -411,15 +412,18 @@ function buildTree() {
   return paths;
 }
 
+let sidebarFlash = null; // { path, at }: the folder revealInSidebar is flashing
+
 const byName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
 
 // Search runs inside the selected folders; say so in the search box.
 // --- search chips ---------------------------------------------------------------------
 //
-// The main search box shows every active tag and saved search as a chip:
-// tags picked in the sidebar (or typed as #tag + Enter), and searches saved
-// with Enter. All are ANDed with whatever is being typed. × or Backspace
-// (in an empty box) removes one. Folders stay in the sidebar — the "where".
+// The main search box shows every active filter as a chip: folders (orange,
+// picked in the sidebar or typed as /folder), tags (their own hue, picked in
+// the sidebar or typed as #tag) and searches saved with Enter. Folders are
+// ORed (search in any of them); everything else is ANDed with what's being
+// typed. × or Backspace (in an empty box) removes one.
 
 function chip(cls, label, onRemove, hueName) {
   const c = el('span', `fchip ${cls}`);
@@ -440,6 +444,12 @@ function chip(cls, label, onRemove, hueName) {
 function renderChips() {
   const f = state.filter;
   const chips = [];
+  for (const d of f.dirs) {
+    const c = chip('dir', dirLabel(d), () => changeView('dir', () => f.dirs.delete(d)));
+    c.title = `${d}\nClick to show in the sidebar`;
+    c.querySelector('.fchip-label').addEventListener('click', () => revealInSidebar(`${d}/x`));
+    chips.push(c);
+  }
   if (f.untagged) chips.push(chip('tag untagged', 'untagged', () => changeView('tag', () => (f.untagged = false))));
   for (const t of f.tags) chips.push(chip('tag', t, () => changeView('tag', () => f.tags.delete(t)), t));
   f.queries.forEach((qq, i) => chips.push(chip('query', `“${qq}”`, () => changeView('search', () => f.queries.splice(i, 1)))));
@@ -454,6 +464,17 @@ function commitSearchText(text) {
   const f = state.filter;
   clearTimeout(searchTimer);
   ui.search.value = '';
+  ui.search.classList.remove('dir-mode', 'tag-mode');
+  closeSuggest();
+  if (text.startsWith('/')) {
+    const hit = folderMatches(text.slice(1))[0];
+    if (hit) pickSuggestion(hit);
+    else {
+      flash(`No folder “${text.slice(1).trim()}”`);
+      changeView('search', () => (f.search = ''));
+    }
+    return;
+  }
   if (text.startsWith('#') && text.length > 1) {
     const name = text.slice(1).trim().toLowerCase();
     if (name === 'untagged') {
@@ -480,13 +501,160 @@ function commitSearchText(text) {
   });
 }
 
-// Backspace in an empty box: remove the last chip (saved search, then tag).
+// Backspace in an empty box: remove the last chip (saved search, then tag,
+// then folder — right to left).
 function removeLastChip() {
   const f = state.filter;
   if (f.queries.length) changeView('search', () => f.queries.pop());
   else if (f.tags.size) changeView('tag', () => f.tags.delete([...f.tags].pop()));
   else if (f.untagged) changeView('tag', () => (f.untagged = false));
+  else if (f.dirs.size) changeView('dir', () => f.dirs.delete([...f.dirs].pop()));
 }
+
+// --- /folder and #tag suggestions -----------------------------------------------------
+//
+// Typing "/" or "#" at the start of the search box picks a folder or tag
+// instead of searching text: a list of fuzzy matches drops down, ↑↓ choose,
+// Enter or Tab adds the chip, Esc cancels. The typed text takes the colour
+// of the chip it will become.
+
+const suggest = { kind: null, items: [], sel: 0 };
+
+// Every visible folder in the tree whose name — with its parents' names —
+// matches all the terms (same rules as the sidebar filter), best first.
+// No terms: the libraries themselves.
+function folderMatches(query) {
+  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const out = [];
+  const visit = (node, trail) => {
+    if (state.hidden.has(node.path)) return;
+    const names = [...trail, node.name];
+    if (!terms.length) {
+      if (!trail.length) out.push({ node, trail, score: 0, hits: [] });
+    } else {
+      let score = 0;
+      let own = 0;
+      const hits = new Set();
+      let ok = true;
+      for (const term of terms) {
+        const mine = termScore(term, node.name);
+        const up = trail.reduce((b, n) => Math.max(b, termScore(term, n) ?? -1), -1);
+        if (mine == null && up < 0) {
+          ok = false;
+          break;
+        }
+        if (mine != null && mine >= up) {
+          own++;
+          score += mine;
+          for (const i of fuzzy(term, node.name) || []) hits.add(i);
+        } else score += up * 0.5; // matched a parent: counts, but less
+      }
+      if (ok && own) out.push({ node, trail, score: score - names.length * 0.3, hits: [...hits] });
+    }
+    for (const kid of node.kids.values()) visit(kid, names);
+  };
+  for (const root of state.tree) visit(root, []);
+  out.sort((a, b) => b.score - a.score || byName(a.node, b.node));
+  return out
+    .filter((m) => !state.filter.dirs.has(m.node.path))
+    .slice(0, 12)
+    .map((m) => ({ kind: 'dir', path: m.node.path, name: m.node.name, where: m.trail.join(' › '), n: m.node.n, hits: m.hits }));
+}
+
+function tagMatches(query) {
+  const q = query.trim().toLowerCase();
+  const items = [...state.tagCounts, { name: 'untagged', count: state.untaggedCount }]
+    .filter((t) => !state.filter.tags.has(t.name) && !(t.name === 'untagged' && state.filter.untagged))
+    .map((t) => ({ t, score: q ? termScore(q, t.name) : 0 }))
+    .filter((m) => m.score != null);
+  items.sort((a, b) => b.score - a.score || a.t.name.localeCompare(b.t.name));
+  return items.slice(0, 12).map(({ t }) => ({ kind: 'tag', name: t.name, n: t.count, hits: q ? fuzzy(q, t.name) || [] : [] }));
+}
+
+function updateSuggest() {
+  const text = ui.search.value;
+  const kind = text.startsWith('/') ? 'dir' : text.startsWith('#') ? 'tag' : null;
+  ui.search.classList.toggle('dir-mode', kind === 'dir');
+  ui.search.classList.toggle('tag-mode', kind === 'tag');
+  if (!kind || document.activeElement !== ui.search) return closeSuggest();
+  const q = text.slice(1);
+  suggest.kind = kind;
+  suggest.items = kind === 'dir' ? folderMatches(q) : tagMatches(q);
+  suggest.sel = 0;
+  renderSuggest();
+}
+
+function renderSuggest() {
+  const top = suggest.items[suggest.sel];
+  if (suggest.kind === 'tag' && top) ui.search.style.setProperty('--h', hue(top.name));
+  if (!suggest.items.length) {
+    ui.suggest.replaceChildren(el('li', 'hint', suggest.kind === 'dir' ? 'No matching folder' : 'No matching tag'));
+  } else {
+    ui.suggest.replaceChildren(
+      ...suggest.items.map((it, i) => {
+        const li = el('li', `${it.kind}${i === suggest.sel ? ' sel' : ''}`);
+        if (it.kind === 'tag') li.style.setProperty('--h', hue(it.name));
+        const name = nameWithHits((it.kind === 'dir' ? '/' : '#') + it.name, it.hits.map((h) => h + 1));
+        name.className = 's-name';
+        li.append(name, el('span', 's-path', it.where || ''), el('span', 's-n', String(it.n ?? '')));
+        if (it.path) li.title = it.path;
+        li.addEventListener('mousedown', (e) => {
+          e.preventDefault(); // keep focus in the box
+          pickSuggestion(it);
+        });
+        li.addEventListener('mousemove', () => {
+          if (suggest.sel === i) return;
+          suggest.sel = i;
+          renderSuggest();
+        });
+        return li;
+      }),
+    );
+    ui.suggest.children[suggest.sel]?.scrollIntoView({ block: 'nearest' });
+  }
+  ui.suggest.hidden = false;
+}
+
+function closeSuggest() {
+  suggest.kind = null;
+  suggest.items = [];
+  ui.suggest.hidden = true;
+}
+
+function moveSuggest(step) {
+  if (!suggest.items.length) return;
+  suggest.sel = (suggest.sel + step + suggest.items.length) % suggest.items.length;
+  renderSuggest();
+}
+
+function pickSuggestion(it) {
+  const f = state.filter;
+  clearTimeout(searchTimer);
+  ui.search.value = '';
+  ui.search.classList.remove('dir-mode', 'tag-mode');
+  closeSuggest();
+  if (it.kind === 'dir') {
+    changeView('dir', () => {
+      f.search = '';
+      f.dirs.add(it.path);
+    });
+  } else if (it.name === 'untagged') {
+    changeView('tag', () => {
+      f.search = '';
+      f.tags.clear();
+      f.untagged = true;
+    });
+  } else {
+    changeView('tag', () => {
+      f.search = '';
+      f.tags.add(it.name);
+      f.untagged = false;
+    });
+  }
+}
+
+ui.search.addEventListener('blur', closeSuggest);
+ui.search.addEventListener('focus', updateSuggest);
 
 ui.searchbox.addEventListener('mousedown', (e) => {
   if (e.target === ui.searchbox || e.target === ui.chips) {
@@ -505,7 +673,7 @@ function renderSearchScope() {
   const hasChips = state.filter.queries.length || state.filter.tags.size || state.filter.untagged;
   ui.search.placeholder = hasChips
     ? `Add a search${scope}…`
-    : `Search${scope || ' names, folders, tags'}   /  (Enter keeps it, #tag adds a tag)`;
+    : `Search${scope || ' names, folders, tags'}  ·  /folder  #tag  ·  Enter keeps it`;
 }
 
 function deselectFolders() {
@@ -604,6 +772,14 @@ function renderFolders() {
     const li = el('li', `dir${state.filter.dirs.has(node.path) ? ' on' : ''}${hidden ? ' hidden-dir' : ''}`);
     li.style.setProperty('--d', depth);
     li.dataset.path = node.path;
+    // Mid-flash from revealInSidebar: carry on where the animation was.
+    if (sidebarFlash && sidebarFlash.path === node.path) {
+      const age = performance.now() - sidebarFlash.at;
+      if (age < 1600) {
+        li.classList.add('flash');
+        li.style.animationDelay = `${-age}ms`;
+      }
+    }
     li.title = hidden ? `${node.path}\nHidden — right-click to unhide` : node.path;
     const tw = el('span', 'tw', expandable ? (open ? '▾' : '▸') : '');
     li.append(tw, nameWithHits(node.name, hitsFor.get(node.path)), el('span', 'n', (hidden ? node.total : node.n).toLocaleString()));
@@ -1880,6 +2056,26 @@ window.addEventListener('keydown', (e) => {
     return;
   }
 
+  if (e.target === ui.search && suggest.kind) {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      moveSuggest(e.key === 'ArrowDown' ? 1 : -1);
+      return;
+    }
+    if ((e.key === 'Enter' || e.key === 'Tab') && !e.shiftKey) {
+      e.preventDefault();
+      const it = suggest.items[suggest.sel];
+      if (it) pickSuggestion(it);
+      else if (e.key === 'Enter') commitSearchText(ui.search.value.trim());
+      return;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      ui.search.value = '';
+      onSearch();
+      return;
+    }
+  }
   if (e.target === ui.search) {
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
@@ -1977,8 +2173,11 @@ window.addEventListener('keydown', (e) => {
 let searchTimer = 0;
 function onSearch() {
   clearTimeout(searchTimer);
+  updateSuggest();
   searchTimer = setTimeout(() => {
-    const value = ui.search.value.trim();
+    // "/folder" and "#tag" pick a chip (see updateSuggest), they don't search.
+    const raw = ui.search.value.trim();
+    const value = raw.startsWith('/') || raw.startsWith('#') ? '' : raw;
     if (value === state.filter.search) return;
     // Searches inside the selected folders, if any (see renderSearchScope).
     changeView('search', () => {
@@ -2073,8 +2272,10 @@ function revealInSidebar(filePath) {
   if (!li) return;
   li.scrollIntoView({ block: 'center' });
   li.classList.remove('flash');
+  li.style.animationDelay = '';
   void li.offsetWidth; // restart the animation if it's already flashing
   li.classList.add('flash');
+  sidebarFlash = { path: node.path, at: performance.now() }; // survives re-renders
 }
 window.sm.onShowInSidebar(revealInSidebar);
 // Quick Search → "open in Sample Manager": select it here (switching view if hidden).
