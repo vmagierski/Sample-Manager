@@ -119,6 +119,7 @@ async function refreshList(opts = {}) {
     tags: [...filter.tags],
     untagged: filter.untagged,
     dirs: [...filter.dirs],
+    rank: true, // best matches first while searching (alphabetical otherwise)
   });
   if (seq !== listSeq) return; // a newer query superseded this one
 

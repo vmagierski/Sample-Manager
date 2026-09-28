@@ -132,3 +132,13 @@ test('rank + limit: file-name matches first, capped', () => {
   assert.strictEqual(db.listSamples({ dirs: ['/r'], limit: 3 }).rows.length, 3);
   db.removeFolder(f.id);
 });
+
+test('rank: exact name, then phrase, then scattered words', () => {
+  const f = db.addFolder('/w', 'w');
+  const names = ['Clap White Noise.wav', 'Noise Burst White.wav', 'white noise.wav', 'Noise/White noise.aif', 'Whitenoise Sweep.wav'];
+  db.syncFolder(f.id, names.map((p) => ({ path: `/w/${p}`, size: 1, mtime: 1 })), () => []);
+  const got = db.listSamples({ dirs: ['/w'], search: 'white noise', rank: true }).rows.map((r) => r.relPath);
+  assert.deepStrictEqual(got.slice(0, 2).sort(), ['Noise/White noise.aif', 'white noise.wav']); // exact names (any extension)
+  assert.deepStrictEqual(got.slice(2), ['Clap White Noise.wav', 'Noise Burst White.wav', 'Whitenoise Sweep.wav']); // phrase, then words
+  db.removeFolder(f.id);
+});

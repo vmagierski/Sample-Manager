@@ -337,12 +337,33 @@ function listSamples(filter = {}) {
     params.push(like, like);
   }
 
-  // Quick search ranks samples whose *file name* contains more of the search
-  // words above ones that only match through a folder or tag name.
+  // Ranked search: samples whose *file name* contains more of the search
+  // words come before ones that only match through a folder or tag name;
+  // then the name *is* the search ("white noise" → white noise.wav), then
+  // it holds the words as a phrase at a word start (Clap White Noise.wav),
+  // anywhere, then shorter names. Unranked: alphabetical.
   let order = 's.filename COLLATE NOCASE, s.path';
   if (filter.rank && terms.length) {
-    order = `(${terms.map(() => "(s.filename LIKE ? ESCAPE '\\')").join(' + ')}) DESC, length(s.filename), ${order}`;
-    params.push(...terms.map((t) => `%${escapeLike(t)}%`));
+    const L = (t) => escapeLike(t);
+    const phrase = terms.join(' ');
+    const wordStart = (t) => `(s.filename LIKE ? ESCAPE '\\' OR s.filename LIKE ? ESCAPE '\\' OR s.filename LIKE ? ESCAPE '\\' OR s.filename LIKE ? ESCAPE '\\')`;
+    const wordStartParams = (t) => [`${L(t)}%`, `% ${L(t)}%`, `%\\_${L(t)}%`, `%-${L(t)}%`];
+    order = [
+      `(${terms.map(() => "(s.filename LIKE ? ESCAPE '\\')").join(' + ')}) DESC`,
+      "(s.filename LIKE ? ESCAPE '\\') DESC", // the whole name, any extension
+      `${wordStart(phrase)} DESC`,
+      "(s.filename LIKE ? ESCAPE '\\') DESC",
+      `(${terms.map((t) => wordStart(t)).join(' + ')}) DESC`,
+      'length(s.filename)',
+      order,
+    ].join(', ');
+    params.push(
+      ...terms.map((t) => `%${L(t)}%`),
+      `${L(phrase)}.%`,
+      ...wordStartParams(phrase),
+      `%${L(phrase)}%`,
+      ...terms.flatMap(wordStartParams),
+    );
   }
   const limit = Math.max(0, Math.floor(filter.limit || 0));
   if (limit) order += ' LIMIT ?';
