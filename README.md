@@ -46,7 +46,7 @@ the menu-bar icon → *Quit* quits completely. Launching it (Spotlight, Finder) 
 | Enter (in search) | Keep the search as a chip and start another (`#tag` adds a tag chip) |
 | Backspace (empty search) | Remove the last chip |
 | ⌘A | Select all visible |
-| Esc | Stop |
+| Esc | Clear the crop region (keeps playing); with no region, stop |
 | I / O | Set crop start / end at the playhead |
 | L | Loop on / off |
 | ⌥-scroll on the waveform | Zoom in / out (horizontal scroll pans while zoomed) |

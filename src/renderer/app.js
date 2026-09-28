@@ -1923,7 +1923,10 @@ window.addEventListener('keydown', (e) => {
       if (state.cursor >= 0) startEdit(state.cursor);
       break;
     case 'Escape':
-      stopPlayback();
+      // With a crop region: clear it, keep playing from where it is.
+      // Without one: stop.
+      if (curRegion()) clearRegion();
+      else stopPlayback();
       break;
     case '/':
       e.preventDefault();
