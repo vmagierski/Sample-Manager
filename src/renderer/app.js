@@ -1194,17 +1194,60 @@ async function commitEdit() {
   if (!edit) return;
   endEdit();
   const row = state.rows.find((r) => r.id === edit.id);
+  const before = row ? [...row.tags] : null;
   const tags = edit.value.split(',').map((s) => s.trim()).filter(Boolean);
+  const saved = await saveTags(edit.id, tags);
+  if (saved && before && saved.join(',') !== before.join(',')) {
+    tagUndo.push({ id: edit.id, name: row.filename, before, after: saved });
+    if (tagUndo.length > 100) tagUndo.shift();
+    tagRedo.length = 0;
+  }
+}
+
+async function saveTags(id, tags) {
   try {
-    const saved = await window.sm.updateTags(edit.id, tags);
+    const saved = await window.sm.updateTags(id, tags);
+    const row = state.rows.find((r) => r.id === id);
     if (row) {
       row.tags = saved;
       patchRow(row);
     }
+    return saved;
   } catch (err) {
     console.error('saving tags failed', err);
+    return null;
   }
 }
+
+// Undo / redo of tag edits (⌘Z / ⇧⌘Z, or Edit › Undo / Redo). While typing
+// in a text field they undo the typing instead.
+const tagUndo = [];
+const tagRedo = [];
+
+async function undoTags(redo) {
+  const a = document.activeElement;
+  if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) {
+    document.execCommand(redo ? 'redo' : 'undo');
+    return;
+  }
+  const step = (redo ? tagRedo : tagUndo).pop();
+  if (!step) {
+    flash(redo ? 'Nothing to redo' : 'Nothing to undo');
+    return;
+  }
+  const saved = await saveTags(step.id, redo ? step.after : step.before);
+  if (!saved) return;
+  (redo ? tagUndo : tagRedo).push(step);
+  const i = state.rows.findIndex((r) => r.id === step.id);
+  if (i >= 0) {
+    selectSingle(i);
+    ensureVisible(i);
+    renderList();
+    updateRowClasses();
+  }
+  flash(`${redo ? 'Redid' : 'Undid'} tag change on ${step.name}`);
+}
+window.sm.onUndo((redo) => undoTags(redo));
 
 // --- player (Web Audio) -----------------------------------------------------------------
 //

@@ -40,6 +40,7 @@ contextBridge.exposeInMainWorld('sm', {
   onShowInSidebar: (cb) => subscribe('ui:showInSidebar', cb),
   foldersMenu: (at, state) => ipcRenderer.send('rail:foldersMenu', at, state),
   onFoldersCommand: (cb) => subscribe('ui:folders', cb),
+  onUndo: (cb) => subscribe('ui:undo', cb),
   onLibraryChanged: (cb) => subscribe('library:changed', cb),
   onTagsChanged: (cb) => subscribe('tags:changed', cb),
   onScanStatus: (cb) => subscribe('scan:status', cb),

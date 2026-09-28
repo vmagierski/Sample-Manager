@@ -80,6 +80,7 @@ Press **Enter** or **T** (or click a row's tag cell) to edit a sample's tags, co
 | Enter (in search) | Keep the search as a chip and start another |
 | `/` or `#` (in search) | Pick a folder / tag chip: ↑↓, Enter or Tab |
 | Backspace (empty search) | Remove the last chip |
+| ⌘Z / ⇧⌘Z | Undo / redo a tag edit (while typing: undo the typing) |
 | ⌘A | Select all visible |
 | R / ⇧R | Random sample / random sample with a random loop region |
 | L | Loop on / off |

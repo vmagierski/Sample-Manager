@@ -417,7 +417,30 @@ function buildMenu() {
         { role: 'close' },
       ],
     },
-    { role: 'editMenu' },
+    {
+      label: 'Edit',
+      // Undo / Redo: in the main window the page decides — text-field undo
+      // while typing, otherwise undo the last tag edit. Elsewhere: native.
+      submenu: [
+        {
+          label: 'Undo',
+          accelerator: 'CmdOrCtrl+Z',
+          click: (_i, w) => (w === win ? send('ui:undo', false) : w && w.webContents.undo()),
+        },
+        {
+          label: 'Redo',
+          accelerator: 'Shift+CmdOrCtrl+Z',
+          click: (_i, w) => (w === win ? send('ui:undo', true) : w && w.webContents.redo()),
+        },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'pasteAndMatchStyle' },
+        { role: 'delete' },
+        { role: 'selectAll' },
+      ],
+    },
     {
       label: 'View',
       submenu: [{ role: 'reload' }, { role: 'toggleDevTools' }, { type: 'separator' }, { role: 'togglefullscreen' }],
