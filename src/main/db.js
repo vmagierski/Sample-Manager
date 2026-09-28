@@ -369,7 +369,7 @@ function listSamples(filter = {}) {
   if (limit) order += ' LIMIT ?';
 
   const sql = `
-    SELECT s.id, s.path, s.filename, s.folder_id AS folderId, s.duration_ms AS durationMs, s.format,
+    SELECT s.id, s.path, s.filename, s.folder_id AS folderId, s.duration_ms AS durationMs, s.format, s.size_bytes AS size,
            substr(s.path, length(f.path) + 2) AS relPath,
            (SELECT group_concat(name, '${SEP}') FROM (
               SELECT t.name FROM sample_tags st JOIN tags t ON t.id = st.tag_id

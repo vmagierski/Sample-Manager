@@ -7,7 +7,7 @@
 // with file-name matches first and capped at LIMIT.
 
 const LIMIT = 200;
-const CACHE = 8; // decoded buffers kept for instant re-audition
+const CACHE_BYTES = 256 * 1024 ** 2; // decoded audio kept for instant re-audition
 
 const $ = (s) => document.querySelector(s);
 const ui = { q: $('#q'), results: $('#results'), count: $('#count'), wave: $('#wave'), chips: $('#qchips') };
@@ -221,18 +221,18 @@ function select(i, audition = true) {
 
 // --- player -----------------------------------------------------------------------
 
-const player = { ctx: null, src: null, row: null, buf: null, start: 0, req: 0, cache: new Map() };
+const player = { ctx: null, src: null, row: null, buf: null, start: 0, req: 0, cache: new BufferCache(CACHE_BYTES) };
 
-async function load(row) {
-  const hit = player.cache.get(row.id);
-  if (hit) return hit;
+function audioCtx() {
   if (!player.ctx) player.ctx = new AudioContext({ latencyHint: 'interactive' });
-  const bytes = await window.sm.readSample(row.id);
-  const buf = await player.ctx.decodeAudioData(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
-  player.cache.set(row.id, buf);
-  while (player.cache.size > CACHE) player.cache.delete(player.cache.keys().next().value);
-  return buf;
+  return player.ctx;
 }
+
+const load = createLoader(
+  player.cache,
+  (id) => window.sm.readSample(id),
+  (ab) => audioCtx().decodeAudioData(ab),
+);
 
 function stop() {
   player.req++;
@@ -250,13 +250,17 @@ async function play(row) {
   stop();
   const req = player.req;
   player.row = row;
+  player.buf = null;
+  const stale = () => req !== player.req;
   let buf;
   try {
-    buf = await load(row);
+    // Null only if main dropped our read for a newer one (see app.js).
+    for (let tries = 0; !buf && !stale() && tries < 3; tries++) buf = await load(row.id, stale);
   } catch {
     return;
   }
-  if (req !== player.req) return; // moved on already
+  if (!buf || stale()) return; // moved on already
+  player.cache.pin(row.id);
   if (player.ctx.state === 'suspended') await player.ctx.resume();
   const src = player.ctx.createBufferSource();
   src.buffer = buf;
@@ -305,7 +309,7 @@ function drawWave() {
   }
   const g = c.getContext('2d');
   g.clearRect(0, 0, c.width, c.height);
-  const buf = player.row && player.cache.get(player.row.id);
+  const buf = player.row && player.buf;
   if (!buf) return;
   if (peaksFor !== buf) {
     const W = c.width;
@@ -338,7 +342,7 @@ function tick() {
 }
 
 ui.wave.addEventListener('mousedown', (e) => {
-  const buf = player.row && player.cache.get(player.row.id);
+  const buf = player.row && player.buf;
   if (!buf) return;
   const r = ui.wave.getBoundingClientRect();
   const t = ((e.clientX - r.left) / r.width) * buf.duration;

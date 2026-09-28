@@ -38,6 +38,7 @@ Quit the app first (⌥⌘Q — ⌘Q only closes the window to the menu bar). Re
 | Settings | `~/Library/Application Support/sample-manager/settings.json` (`quickSearchHotkey`) |
 | Recordings | `~/Music/Sample Manager/Recordings` |
 | Dragged crops | `~/Library/Caches/Sample Manager/Crops` (deleted a week after their last drag) |
+| Converted CAFs | `~/Library/Caches/Sample Manager/Converted` (WAV copies for playback and crops; capped at 2 GB, least recently used go first) |
 
 ## Layout
 
@@ -50,8 +51,10 @@ Quit the app first (⌥⌘Q — ⌘Q only closes the window to the menu bar). Re
 | `src/main/drag.js` | Native drag-out (`webContents.startDrag`) |
 | `src/main/crop.js` | Rendering, dragging and pruning crops |
 | `src/main/audio.js` | AIFF/CAF decoding, WAV slicing |
+| `src/main/convcache.js` | On-disk cache of CAF conversions |
+| `src/main/latest.js` | One sample load per window at a time, newest wins |
 | `src/main/quick.js` | Quick Search panel, menu-bar icon, global hotkey |
-| `src/renderer/` | Main window (`index.html`, `app.js`) and Quick Search (`quick.*`) |
+| `src/renderer/` | Main window (`index.html`, `app.js`) and Quick Search (`quick.*`); `buffer-cache.js` (decoded-audio cache and loader) is shared by both |
 | `test/` | Unit tests |
 
 ## Testing alongside the installed app
@@ -60,5 +63,6 @@ Environment variables for a test copy:
 
 - `SM_USER_DATA` — a separate library / settings folder. A test copy with this set doesn't register the global hotkey, so it can't take ⌃⌥Space from the installed app.
 - `SM_CROP_DIR` — where dragged crops go.
+- `SM_CACHE_DIR` — where converted CAFs are cached.
 - `SM_NO_HOTKEY` — skip the hotkey; `SM_HOTKEY` — register it even with `SM_USER_DATA`.
 - `SM_START_HIDDEN` — start in the menu bar only, as a login launch does.
