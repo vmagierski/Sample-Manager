@@ -14,7 +14,7 @@ const DEFAULT_HOTKEY = 'Control+Alt+Space';
 let panel = null;
 let tray = null;
 let hotkey = null; // registered accelerator, or null if registration failed
-let opts = null; // { preload, rendererDir, openMain(id, path), openMainWindow() }
+let opts = null; // { preload, rendererDir, openMain(id, path), openMainWindow(), connectPage(webContents) }
 
 function readSettings() {
   try {
@@ -61,6 +61,7 @@ function createPanel() {
   // ⌘Tab entry, no Dock icon, and relaunching from Spotlight showed nothing.
   panel.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
   panel.setAlwaysOnTop(true, 'floating');
+  opts.connectPage(panel.webContents);
   panel.loadFile(path.join(opts.rendererDir, 'quick.html'));
   // Like Spotlight: clicking anywhere else dismisses it. (A drag into the DAW
   // doesn't move focus, so the panel stays until you click elsewhere.)

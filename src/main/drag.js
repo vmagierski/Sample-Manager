@@ -1,6 +1,6 @@
 const fs = require('fs');
 const { ipcMain, nativeImage } = require('electron');
-const db = require('./db');
+const lookup = require('./lookup');
 const crop = require('./crop');
 
 // macOS crashes the drag if the icon is empty, so we always pass this one.
@@ -49,11 +49,11 @@ function register() {
     const files = [];
     for (const id of [].concat(ids || [])) {
       try {
-        const p = crop.has(id) ? await crop.materialize(id) : db.getById(id)?.path;
+        const p = crop.has(id) ? await crop.materialize(id) : lookup.getById(id)?.path;
         if (p && fs.existsSync(p)) files.push(p);
       } catch (err) {
         console.warn(`drag: crop for sample ${id} failed: ${err.message}`);
-        const orig = db.getById(id)?.path; // fall back to the whole sample
+        const orig = lookup.getById(id)?.path; // fall back to the whole sample
         if (orig && fs.existsSync(orig)) files.push(orig);
       }
     }

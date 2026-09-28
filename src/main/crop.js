@@ -1,9 +1,8 @@
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const { app } = require('electron');
-const db = require('./db');
-const { cropToWav } = require('./audio');
+const lookup = require('./lookup');
+const library = require('./library');
 
 // Crops dragged into a DAW land here, outside the library: they're not
 // kept. Logic copies a dropped file into the project when it's saved (File ›
@@ -13,21 +12,17 @@ const { cropToWav } = require('./audio');
 const CROP_DIR = process.env.SM_CROP_DIR || path.join(app.getPath('home'), 'Library', 'Caches', 'Sample Manager', 'Crops');
 const KEEP_DAYS = 7;
 
-// Regions set in the player are rendered to a temp file right away, so a drag
-// only has to copy a finished file. id -> { start, end, file: Promise<tmpPath> }
+// Regions set in the player are rendered to a temp file right away (by the
+// library worker), so a drag only has to copy a finished file.
+// id -> { start, end, file: Promise<tmpPath> }
 const pending = new Map();
-let seq = 0;
 
 function prepare(id, start, end) {
   clear(id);
-  const row = db.getById(id);
+  const row = lookup.getById(id);
   if (!row) return Promise.reject(new Error('unknown sample'));
   if (!(end > start)) return Promise.reject(new Error('empty region'));
-  const file = cropToWav(row.path, start, end).then(async (buf) => {
-    const tmp = path.join(os.tmpdir(), `sm-crop-${process.pid}-${++seq}.wav`);
-    await fs.promises.writeFile(tmp, buf);
-    return tmp;
-  });
+  const file = library.call('renderCrop', row.path, start, end);
   pending.set(id, { start, end, file, source: row.path });
   file.catch(() => pending.get(id)?.file === file && pending.delete(id));
   return file.then(() => true);
