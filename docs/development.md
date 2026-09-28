@@ -1,6 +1,6 @@
 # Development
 
-Electron app, vanilla JS, no bundler. The main process indexes watched folders into SQLite (better-sqlite3), watches them with chokidar and tags samples by `tag-rules.json`; the renderer is the browser UI and the Quick Search panel.
+Electron app, vanilla JS, no bundler. A library worker (an Electron `utilityProcess`) indexes watched folders into SQLite (better-sqlite3), watches them with chokidar, tags samples by `tag-rules.json` and reads and converts audio. The main process keeps windows, menus, dialogs, drag and the hotkey, so none of that waits on the library. The renderer is the browser UI and the Quick Search panel; each page talks to the worker directly over its own `MessagePort`.
 
 ```sh
 npm install        # also rebuilds better-sqlite3 for Electron
@@ -19,7 +19,7 @@ npm run bench -- --skip-large --skip-scan --runs 3
 
 `scripts/make-bench-library.js` (also `npm run bench:make`) builds a throwaway library in `$TMPDIR/sm-bench` (or `--dir` / `SM_BENCH_DIR`): a `library.db` with ~750k samples in realistic packs, tagged by `tag-rules.json` (the paths exist only in the database); a real `tree/` of ~30k small WAVs for scan timing; and `large/` with a 30-minute WAV, the same audio as AIFF and ALAC CAF, and a 10-minute AAC CAF. Each part is only built if missing; `--force` rebuilds, and `--samples`, `--tree-files` and `--large-min` change the sizes.
 
-`scripts/bench.js` times main-list queries and searches (SQL plus the cost of cloning the rows to the renderer), `listDirs` and `listTags` (with and without a hidden folder), a first scan and an unchanged rescan of `tree/`, and `readPlayable` / `cropToWav` on each large file, each in its own process for a clean peak memory figure. Each line is compared with a target (50 ms for list queries, 100 ms for an unchanged `syncFolder`, 150 ms and 1 GB for the large files). Misses are reported, not failed: it's a measuring tool, not part of `npm test`.
+`scripts/bench.js` times main-list queries and searches (SQL plus the cost of cloning the rows to the renderer), `listDirs` and `listTags` (with and without a hidden folder), a first scan and an unchanged rescan of `tree/` (with the longest the library worker's event loop is blocked), and `readPlayable` / `cropToWav` on each large file, each in its own process for a clean peak memory figure. Each line is compared with a target (50 ms for list queries, 100 ms for an unchanged `syncFolder`, 150 ms and 1 GB for the large files). Misses are reported, not failed: it's a measuring tool, not part of `npm test`.
 
 ## Installing as a Mac app
 
@@ -44,7 +44,11 @@ Quit the app first (⌥⌘Q — ⌘Q only closes the window to the menu bar). Re
 
 | Path | |
 |---|---|
-| `src/main/index.js` | App lifecycle, menus, IPC, folder adding / scanning |
+| `src/main/index.js` | App lifecycle, menus, dialogs, IPC |
+| `src/main/library.js` | Main's side of the library worker: starts and restarts it, hands each page a port to it |
+| `src/main/library-worker.js` | The library worker's entry: wires the parent port and the pages' ports to `library-service.js` |
+| `src/main/library-service.js` | What the worker does: scanning, watching, folders, tags, sample reads and crops |
+| `src/main/lookup.js` | Main's read-only view of the database, for drags and context menus |
 | `src/main/db.js` | SQLite schema and queries (search, ranking, tags, hidden folders) |
 | `src/main/scanner.js` | Folder walk and rule-based tagging |
 | `src/main/watcher.js` | chokidar watching, with rename detection |
@@ -54,7 +58,8 @@ Quit the app first (⌥⌘Q — ⌘Q only closes the window to the menu bar). Re
 | `src/main/convcache.js` | On-disk cache of CAF conversions |
 | `src/main/latest.js` | One sample load per window at a time, newest wins |
 | `src/main/quick.js` | Quick Search panel, menu-bar icon, global hotkey |
-| `src/renderer/` | Main window (`index.html`, `app.js`) and Quick Search (`quick.*`); `buffer-cache.js` (decoded-audio cache and loader) is shared by both |
+| `src/shared/rpc.js` | Request/response and events over a port, for main ↔ worker and page ↔ worker |
+| `src/renderer/` | Main window (`index.html`, `app.js`) and Quick Search (`quick.*`); shared by both: `library.js` (builds `window.sm`: library calls to the worker, the rest through main) and `buffer-cache.js` (decoded-audio cache and loader) |
 | `test/` | Unit tests |
 
 ## Testing alongside the installed app

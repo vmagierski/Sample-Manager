@@ -141,7 +141,7 @@ async function benchScan(opts) {
     const k = `@${(files.length / 1000).toFixed(0)}k files`;
     record(`scan ${k}`, `${name}: walk (async)`, t1 - t0, null);
     record(`scan ${k}`, `${name}: syncFolder`, t2 - t1, target);
-    record(`scan ${k}`, `${name}: longest main-process block`, lag.max / 1e6, 50);
+    record(`scan ${k}`, `${name}: longest block (library worker)`, lag.max / 1e6, 50);
   };
   await pass('first scan', null);
   await pass('rescan, nothing changed', 100);
