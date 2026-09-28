@@ -70,9 +70,8 @@ CREATE TABLE dir_counts (
   n INTEGER NOT NULL,
   PRIMARY KEY (folder_id, dir)
 ) WITHOUT ROWID;
-ALTER TABLE tags ADD COLUMN n INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX idx_samples_name ON samples(filename COLLATE NOCASE, path);
-DROP INDEX idx_sample_tags_tag; -- was on tag_id alone: a tag's samples straight from the index
+DROP INDEX IF EXISTS idx_sample_tags_tag; -- was on tag_id alone: a tag's samples straight from the index
 CREATE INDEX idx_sample_tags_tag ON sample_tags(tag_id, sample_id);
 
 CREATE TRIGGER samples_counted AFTER INSERT ON samples BEGIN
@@ -108,13 +107,31 @@ const searchRows = (where) => `
                    WHERE st.sample_id = s.id), '') || char(10, 10)
   FROM samples s JOIN folders f ON f.id = s.folder_id ${where}`;
 
+const hasColumn = (d, table, col) => d.pragma(`table_info(${table})`).some((c) => c.name === col);
+
 // Upgrades for libraries made by older versions, by PRAGMA user_version.
-// SQL, or a function of the database.
+// An older version that opens the library sets user_version back to its own
+// (and doesn't keep the newer tables current), so each step must also work
+// when it has run before: it rebuilds what it adds.
 const MIGRATIONS = [
   // 1: tag rules the folder was last tagged with (see syncFolder).
-  'ALTER TABLE folders ADD COLUMN rules_hash TEXT',
+  (d) => {
+    if (!hasColumn(d, 'folders', 'rules_hash')) d.exec('ALTER TABLE folders ADD COLUMN rules_hash TEXT');
+  },
   // 2: search index, stored counts, name order.
-  SEARCH_SCHEMA + searchRows(''),
+  (d) => {
+    d.exec(`
+      DROP TRIGGER IF EXISTS samples_counted;
+      DROP TRIGGER IF EXISTS samples_uncounted;
+      DROP TRIGGER IF EXISTS sample_tags_counted;
+      DROP TRIGGER IF EXISTS sample_tags_uncounted;
+      DROP TABLE IF EXISTS sample_search;
+      DROP TABLE IF EXISTS counters;
+      DROP TABLE IF EXISTS dir_counts;
+      DROP INDEX IF EXISTS idx_samples_name;`);
+    if (!hasColumn(d, 'tags', 'n')) d.exec('ALTER TABLE tags ADD COLUMN n INTEGER NOT NULL DEFAULT 0');
+    d.exec(SEARCH_SCHEMA + searchRows(''));
+  },
 ];
 
 let db;
@@ -126,18 +143,18 @@ function open(file) {
   db = new Database(file);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
+  if (process.env.X_CACHE) db.pragma(`cache_size = ${process.env.X_CACHE}`);
   db.function('sm_dirname', { deterministic: true }, dirOf);
   db.exec(SCHEMA);
   const version = db.pragma('user_version', { simple: true });
   // A new library gets the columns from SCHEMA only through migrations, so
-  // every step runs on it too.
-  db.transaction(() => {
-    for (let v = version; v < MIGRATIONS.length; v++) {
-      if (typeof MIGRATIONS[v] === 'function') MIGRATIONS[v](db);
-      else db.exec(MIGRATIONS[v]);
-    }
-    db.pragma(`user_version = ${MIGRATIONS.length}`);
-  })();
+  // every step runs on it too. (A library from a newer version keeps its number.)
+  if (version < MIGRATIONS.length) {
+    db.transaction(() => {
+      for (let v = version; v < MIGRATIONS.length; v++) MIGRATIONS[v](db);
+      db.pragma(`user_version = ${MIGRATIONS.length}`);
+    })();
+  }
   // The index's vocabulary (every trigram in it), for 1–2 character terms.
   db.exec("CREATE VIRTUAL TABLE IF NOT EXISTS temp.search_vocab USING fts5vocab(main, 'sample_search', 'row')");
   changes = newChanges();
@@ -187,6 +204,7 @@ function open(file) {
     idsWithTag: db.prepare('SELECT sample_id FROM sample_tags WHERE tag_id = (SELECT id FROM tags WHERE name = ?)').pluck(),
     idsUntagged: db.prepare('SELECT id FROM samples s WHERE NOT EXISTS (SELECT 1 FROM sample_tags st WHERE st.sample_id = s.id)').pluck(),
     searchIds: db.prepare('SELECT rowid FROM sample_search WHERE sample_search MATCH ?').pluck(),
+    namesFor: db.prepare('SELECT id, filename FROM samples WHERE id IN (SELECT value FROM json_each(?))').raw(),
     searchNames: db.prepare(`
       SELECT s.id, s.filename FROM sample_search JOIN samples s ON s.id = sample_search.rowid
       WHERE sample_search MATCH ?`).raw(),
@@ -215,6 +233,8 @@ function open(file) {
     deleteAutoTags: db.prepare("DELETE FROM sample_tags WHERE sample_id = ? AND source = 'auto'"),
     deleteAllTags: db.prepare('DELETE FROM sample_tags WHERE sample_id = ?'),
     addSampleTag: db.prepare('INSERT OR IGNORE INTO sample_tags (sample_id, tag_id, source) VALUES (?, ?, ?)'),
+    sampleTagIds: db.prepare('SELECT st.tag_id AS id, t.name, st.source FROM sample_tags st JOIN tags t ON t.id = st.tag_id WHERE st.sample_id = ?'),
+    deleteSampleTag: db.prepare('DELETE FROM sample_tags WHERE sample_id = ? AND tag_id = ?'),
     sampleTags: db.prepare(`
       SELECT t.name, st.source FROM sample_tags st JOIN tags t ON t.id = st.tag_id
       WHERE st.sample_id = ? ORDER BY t.name`),
@@ -236,8 +256,15 @@ function close() {
   db = null;
 }
 
-// Every write in one transaction (nested ones become savepoints).
-const batch = (fn) => db.transaction(fn)();
+// Every write in one transaction (nested ones become savepoints), with the
+// directory counts it changed.
+function batch(fn) {
+  return db.transaction(() => {
+    const out = fn();
+    flushDirCounts();
+    return out;
+  })();
+}
 
 // --- change log -----------------------------------------------------------
 //
@@ -264,7 +291,10 @@ function bump() {
 }
 
 // Every sample added to (+1), removed from (-1) or updated in (0) a directory
-// passes through here — which also keeps dir_counts and the name order current.
+// passes through here (always inside a batch) — which also keeps dir_counts
+// and the name order current.
+const dirDeltas = new Map(); // folderId \0 dir -> { folderId, dir, delta }, until the batch ends
+
 function changedFile(folderId, p, delta) {
   const dir = dirOf(p);
   const key = folderId + '\0' + dir;
@@ -272,11 +302,21 @@ function changedFile(folderId, p, delta) {
   if (hit) hit.delta += delta;
   else changes.dirs.set(key, { folderId, dir, delta });
   if (delta) {
-    q.dirCount.run(folderId, dir, delta);
-    if (delta < 0) q.dirCountGone.run(folderId, dir);
+    const d = dirDeltas.get(key);
+    if (d) d.delta += delta;
+    else dirDeltas.set(key, { folderId, dir, delta });
     dropViewCaches();
   }
   bump();
+}
+
+function flushDirCounts() {
+  for (const { folderId, dir, delta } of dirDeltas.values()) {
+    if (!delta) continue;
+    q.dirCount.run(folderId, dir, delta);
+    if (delta < 0) q.dirCountGone.run(folderId, dir);
+  }
+  dirDeltas.clear();
 }
 
 function changedAll() {
@@ -307,22 +347,34 @@ function tagIdFor(name) {
   return row ? row.id : q.insertTag.get(name).id;
 }
 
-// Rewrite a sample's search row: after anything that changes its path below
-// its folder or its tags.
-function indexSample(sampleId) {
-  q.searchDelete.run(sampleId);
+// Write a sample's search row: after anything that changes its path below
+// its folder or its tags. `fresh`: a sample just added, with no row yet.
+function indexSample(sampleId, fresh = false) {
+  if (!fresh) q.searchDelete.run(sampleId);
   q.searchInsert.run(sampleId);
 }
 
-function applyAutoTags(sampleId, names) {
-  q.deleteAutoTags.run(sampleId);
-  for (const name of names) {
-    const n = normalizeTag(name);
-    if (n) q.addSampleTag.run(sampleId, tagIdFor(n), 'auto');
+// Make a sample's auto tags these (a tag it has by hand stays by hand).
+// Writes only what differs; true if anything did.
+function applyAutoTags(sampleId, names, fresh = false) {
+  const want = new Set(names.map(normalizeTag).filter(Boolean));
+  let changed = false;
+  if (!fresh) {
+    for (const t of q.sampleTagIds.all(sampleId)) {
+      if (want.delete(t.name)) continue; // has it already
+      if (t.source !== 'auto') continue;
+      q.deleteSampleTag.run(sampleId, t.id);
+      changed = true;
+    }
   }
+  for (const name of want) {
+    q.addSampleTag.run(sampleId, tagIdFor(name), 'auto');
+    changed = true;
+  }
+  return changed;
 }
 
-const setTags = (sampleId, names) => db.transaction(() => {
+const setTags = (sampleId, names) => batch(() => {
   const current = new Map(q.sampleTags.all(sampleId).map((t) => [t.name, t.source]));
   const wanted = [...new Set(names.map(normalizeTag).filter(Boolean))];
   q.deleteAllTags.run(sampleId);
@@ -334,7 +386,7 @@ const setTags = (sampleId, names) => db.transaction(() => {
   indexSample(sampleId);
   writes++;
   return q.sampleTags.all(sampleId).map((t) => t.name);
-})();
+});
 
 // Directories that directly contain samples, with counts, for the folder tree,
 // and the change number it's current as of (see takeChanges).
@@ -358,14 +410,14 @@ function unhideDir(dir) {
 
 // Make sure these tags exist (e.g. every tag named in tag-rules.json), even
 // before any sample has them.
-const ensureTags = (names) => db.transaction(() => {
+const ensureTags = (names) => batch(() => {
   let added = 0;
   for (const n of names.map(normalizeTag).filter(Boolean)) added += q.ensureTag.run(n).changes;
   if (added) changedAll();
-})();
+});
 
 // Explicit removal: the tag and all its uses, manual and auto.
-const deleteTag = (name) => db.transaction(() => {
+const deleteTag = (name) => batch(() => {
   const row = q.tagId.get(normalizeTag(name));
   if (!row) return false;
   const had = q.tagSamples.all(row.id);
@@ -374,7 +426,7 @@ const deleteTag = (name) => db.transaction(() => {
   for (const id of had) indexSample(id);
   changedAll();
   return true;
-})();
+});
 
 // Hidden folders not inside another hidden folder.
 function outermostHidden() {
@@ -426,7 +478,7 @@ function addFolder(folderPath, label) {
   return q.insertFolder.get(folderPath, label);
 }
 
-const removeFolder = (id) => db.transaction(() => {
+const removeFolder = (id) => batch(() => {
   const f = q.getFolder.get(id);
   if (f) q.unhideUnder.run(f.path, ...range(f.path));
   q.deleteFolderSamples.run(id);
@@ -434,7 +486,7 @@ const removeFolder = (id) => db.transaction(() => {
   q.deleteFolder.run(id);
   dropViewCaches();
   changedAll();
-})();
+});
 
 // --- samples --------------------------------------------------------------
 
@@ -454,14 +506,15 @@ function sampleParams(folderId, file) {
 function upsertOne(folderId, file, autoTags) {
   const prev = q.folderIdByPath.get(file.path);
   const row = q.upsertSample.get(sampleParams(folderId, file));
-  if (!row.tags_edited) applyAutoTags(row.id, autoTags);
-  indexSample(row.id);
+  const retagged = !row.tags_edited && applyAutoTags(row.id, autoTags, !prev);
+  // New, re-tagged, or its path below the folder changed (absorbed by a parent).
+  if (!prev || retagged || prev.folderId !== folderId) indexSample(row.id, !prev);
   if (prev && prev.folderId !== folderId) changedFile(prev.folderId, file.path, -1); // absorbed by a parent folder
   changedFile(folderId, file.path, prev && prev.folderId === folderId ? 0 : 1);
   return row.id;
 }
 
-const upsertFile = (folderId, file, autoTags) => db.transaction(() => upsertOne(folderId, file, autoTags))();
+const upsertFile = (folderId, file, autoTags) => batch(() => upsertOne(folderId, file, autoTags));
 
 // Files per transaction in syncFolder.
 const CHUNK = 2000;
@@ -495,8 +548,7 @@ function* syncSteps(folderId, files, tagsFor, { rulesHash, startedAt = Infinity 
         known.delete(file.path);
         if (!row || row.size !== file.size || row.mtime !== file.mtime) {
           upsertOne(folderId, file, tagsFor(file.path));
-        } else if (retag && !row.edited) {
-          applyAutoTags(row.id, tagsFor(file.path));
+        } else if (retag && !row.edited && applyAutoTags(row.id, tagsFor(file.path))) {
           indexSample(row.id);
           retagged++;
         }
@@ -531,19 +583,19 @@ const getByPath = (p) => q.getByPath.get(p);
 const getById = (id) => q.getById.get(id);
 const hasPath = (p) => !!q.getByPath.get(p);
 
-const removePath = (p) => db.transaction(() => {
+const removePath = (p) => batch(() => {
   const row = q.folderIdByPath.get(p);
   if (row && q.deleteByPath.run(p).changes) changedFile(row.folderId, p, -1);
-})();
+});
 
-const removeDir = (dir) => db.transaction(() => {
+const removeDir = (dir) => batch(() => {
   const rows = q.pathsUnderDir.all(...range(dir));
   q.deleteUnderDir.run(...range(dir));
   for (const r of rows) changedFile(r.folderId, r.path, -1);
-})();
+});
 
 // Rename/move detected by the watcher: keep the row (and its manual tags).
-const movePath = (oldPath, newPath, folderId, autoTags) => db.transaction(() => {
+const movePath = (oldPath, newPath, folderId, autoTags) => batch(() => {
   const prev = q.folderIdByPath.get(oldPath);
   const row = q.movePath.get({
     oldPath,
@@ -559,7 +611,7 @@ const movePath = (oldPath, newPath, folderId, autoTags) => db.transaction(() => 
     changedFile(folderId, newPath, 1);
   }
   return row;
-})();
+});
 
 function setDuration(id, ms) {
   q.setDuration.run(Math.round(ms), id);
@@ -681,32 +733,30 @@ function matchIds(filter, dirs, terms, rank) {
   if (filter.untagged) lists.push(q.idsUntagged.all());
 
   // Search: every term must match the path below the watched folder, or a tag.
-  let names = null;
   if (terms.length) {
     const match = searchMatch(terms);
     if (match == null) return { ids: [], names: [] };
-    if (rank) {
+    // Ranking a search alone: the names come with the matches.
+    if (rank && !lists.length) {
       const found = q.searchNames.all(match);
-      lists.push(found.map((r) => r[0]));
-      names = found.map((r) => r[1].toLowerCase());
-    } else lists.push(q.searchIds.all(match));
+      return { ids: found.map((r) => r[0]), names: found.map((r) => r[1].toLowerCase()) };
+    }
+    lists.push(q.searchIds.all(match));
   }
-
   if (!lists.length) return { ids: null, names: null };
-  // Keep the search's list (the last) when ranking, so the names stay aligned;
-  // otherwise the shortest.
-  const [base, ...rest] = names ? [lists.pop(), ...lists] : lists.sort((a, b) => a.length - b.length);
-  if (!rest.length) return { ids: base, names };
-  const seen = new Uint8Array(nameOrder().pos.length);
-  for (const list of rest) for (const id of list) seen[id]++;
-  const ids = [];
-  const kept = names ? [] : null;
-  for (let i = 0; i < base.length; i++) {
-    if (seen[base[i]] !== rest.length) continue;
-    ids.push(base[i]);
-    if (kept) kept.push(names[i]);
+
+  // On every list: count each id's lists, keep those on all of them.
+  const [base, ...rest] = lists.sort((a, b) => a.length - b.length);
+  let ids = base;
+  if (rest.length) {
+    const seen = new Uint8Array(nameOrder().pos.length);
+    for (const list of rest) for (const id of list) seen[id]++;
+    ids = base.filter((id) => seen[id] === rest.length);
   }
-  return { ids, names: kept };
+  if (!rank) return { ids, names: null };
+  // Ranking a narrowed search: names for just what's left.
+  const found = q.namesFor.all(JSON.stringify(ids));
+  return { ids: found.map((r) => r[0]), names: found.map((r) => r[1].toLowerCase()) };
 }
 
 // These ids (null: all) in name order, less the hidden ones: a mark per
@@ -843,3 +893,4 @@ module.exports = {
   dropViewCaches,
   normalizeTag,
 };
+module.exports._q = () => q;
