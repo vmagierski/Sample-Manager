@@ -5,10 +5,13 @@ const { app } = require('electron');
 const db = require('./db');
 const { cropToWav } = require('./audio');
 
-// Crops dragged into a DAW land here, not in a temp dir: Logic may reference
-// the dropped file in place, so it has to stay put. It's inside the library,
-// so crops also show up in the list (tagged "crop" by tag-rules.json).
-const CROP_DIR = process.env.SM_CROP_DIR || path.join(app.getPath('home'), 'Music', 'Sample Manager', 'Crops');
+// Crops dragged into a DAW land here, outside the library: they're not
+// kept. Logic copies a dropped file into the project when it's saved (File ›
+// Project Settings › Assets › "Copy audio files into project"), so a crop
+// only has to outlive that — it's deleted KEEP_DAYS after its last drag.
+// Not a temp dir: macOS clears those on its own schedule. Use Save… to keep one.
+const CROP_DIR = process.env.SM_CROP_DIR || path.join(app.getPath('home'), 'Library', 'Caches', 'Sample Manager', 'Crops');
+const KEEP_DAYS = 7;
 
 // Regions set in the player are rendered to a temp file right away, so a drag
 // only has to copy a finished file. id -> { start, end, file: Promise<tmpPath> }
@@ -56,7 +59,33 @@ async function materialize(id) {
   fs.mkdirSync(CROP_DIR, { recursive: true });
   const dest = path.join(CROP_DIR, cropName(p.source, p.start, p.end));
   if (!fs.existsSync(dest)) fs.copyFileSync(tmp, dest);
+  else {
+    const now = new Date();
+    fs.utimesSync(dest, now, now); // dragged again: restart its week
+  }
   return dest;
+}
+
+// Delete crops last dragged more than KEEP_DAYS ago. Runs at launch and daily.
+function prune(now = Date.now()) {
+  let names;
+  try {
+    names = fs.readdirSync(CROP_DIR);
+  } catch {
+    return 0;
+  }
+  let n = 0;
+  for (const name of names) {
+    if (!name.endsWith('.wav')) continue;
+    const file = path.join(CROP_DIR, name);
+    try {
+      if (now - fs.statSync(file).mtimeMs > KEEP_DAYS * 86400e3) {
+        fs.unlinkSync(file);
+        n++;
+      }
+    } catch {}
+  }
+  return n;
 }
 
 // "Save…": copy the rendered crop wherever the user picks.
@@ -72,4 +101,4 @@ function suggestedName(id) {
   return p ? cropName(p.source, p.start, p.end) : null;
 }
 
-module.exports = { prepare, clear, clearAll, has, materialize, saveTo, suggestedName, CROP_DIR };
+module.exports = { prepare, clear, clearAll, has, materialize, saveTo, suggestedName, prune, CROP_DIR, KEEP_DAYS };

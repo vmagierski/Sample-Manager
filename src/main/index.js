@@ -485,6 +485,8 @@ app.whenReady().then(() => {
   db.open(path.join(app.getPath('userData'), 'library.db'));
   loadRules();
   ensureAppMusicDir();
+  crop.prune(); // dragged crops are only kept for a week
+  setInterval(() => crop.prune(), 86400e3).unref();
   watcher = new LibraryWatcher({ onChange: notifyChanged });
   registerIpc();
   // Quick Search first, then the main window (setting the panel up can touch
