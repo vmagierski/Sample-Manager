@@ -2,8 +2,7 @@
 
 A fast, keyboard-driven sample browser for macOS. Point it at your sample folders and it indexes and tags everything, plays each sample as you arrow through the list, and lets you drag any sample — or just the part you want — straight into Logic or any other DAW.
 
-<!-- demo video: drag "Sample Manager demo.mp4" into this README in GitHub's editor and replace the image below with the URL it gives you -->
-![Sample Manager](docs/media/demo-poster.jpg)
+![Sample Manager]()
 
 ## Features
 
