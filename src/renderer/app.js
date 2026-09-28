@@ -524,7 +524,7 @@ const suggest = { kind: null, items: [], sel: 0 };
 // termScore, plus abbreviations that start a word: "ks" → "Kicks" (90) or
 // "dk" → "Drum Kits" (60) beat letters found mid-word ("ks" in "Sticks", 70)
 // or scattered. Short typed abbreviations are what the / picker gets most.
-function pickScore(term, text) {
+function pickScoreRaw(term, text) {
   const base = termScore(term, text);
   if (base != null && base >= 90) return base;
   const t = text.toLowerCase();
@@ -551,6 +551,19 @@ function pickScore(term, text) {
 // folder that happens to hold both ("Drum Sticks"). No terms: the libraries.
 function folderMatches(query) {
   const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+  // Like the sidebar filter: a word some folder name contains as typed
+  // doesn't also match scattered letters ("snar" ≠ SAmple MaNAgeR).
+  const exactSomewhere = new Set();
+  const scan = (node) => {
+    const n = node.name.toLowerCase();
+    for (const t of terms) if (n.includes(t)) exactSomewhere.add(t);
+    node.kids.forEach(scan);
+  };
+  state.tree.forEach(scan);
+  const pickScore = (term, name) => {
+    const sc = pickScoreRaw(term, name);
+    return sc != null && sc <= 40 && exactSomewhere.has(term) ? null : sc;
+  };
   const out = [];
   const visit = (node, trail) => {
     if (state.hidden.has(node.path)) return;
@@ -2116,6 +2129,7 @@ async function randomSample(withRegion = false) {
   await playRow(row);
   if (!withRegion || player.row !== row || !player.buf) return;
   const dur = player.buf.duration;
+  if (dur < 0.25) return; // a one-shot hit: a slice of it would just buzz
   const len = lastCropLength < dur ? lastCropLength : dur / 2;
   const start = Math.random() * (dur - len);
   commitRegion(start, start + len);
