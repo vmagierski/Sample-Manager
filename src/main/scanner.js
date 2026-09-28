@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -5,6 +6,7 @@ const path = require('path');
 const AUDIO_EXTS = new Set(['wav', 'wave', 'aif', 'aiff', 'aifc', 'mp3', 'flac', 'ogg', 'oga', 'm4a', 'caf']);
 
 let rules = [];
+let hash = '';
 
 // tag-rules.json: a list of rules, each one of:
 //   { "tag": "kick", "pattern": "kick|..." }
@@ -34,6 +36,10 @@ function loadRules(file) {
     }
   }
   rules = compiled;
+  hash = crypto
+    .createHash('sha1')
+    .update(JSON.stringify(rules.map(({ tag, re, folder }) => [tag, re ? re.source : null, folder || null])))
+    .digest('hex');
   return rules.length;
 }
 
@@ -88,6 +94,9 @@ async function walk(root) {
   return out;
 }
 
+// Changes whenever the loaded rules could tag anything differently.
+const rulesHash = () => hash;
+
 const ruleTags = () => [...new Set(rules.map((r) => r.tag))];
 
-module.exports = { loadRules, ruleTags, tagsFor, isAudio, walk, AUDIO_EXTS };
+module.exports = { loadRules, rulesHash, ruleTags, tagsFor, isAudio, walk, AUDIO_EXTS };

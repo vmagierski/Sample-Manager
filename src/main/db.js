@@ -49,6 +49,12 @@ CREATE TABLE IF NOT EXISTS hidden_dirs (
 );
 `;
 
+// Upgrades for libraries made by older versions, by PRAGMA user_version.
+const MIGRATIONS = [
+  // 1: tag rules the folder was last tagged with (see syncFolder).
+  'ALTER TABLE folders ADD COLUMN rules_hash TEXT',
+];
+
 let db;
 let q;
 
@@ -57,14 +63,27 @@ function open(file) {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA);
+  const version = db.pragma('user_version', { simple: true });
+  // A new library gets the columns from SCHEMA only through migrations, so
+  // every step runs on it too.
+  db.transaction(() => {
+    for (let v = version; v < MIGRATIONS.length; v++) db.exec(MIGRATIONS[v]);
+    db.pragma(`user_version = ${MIGRATIONS.length}`);
+  })();
+  changes = newChanges();
 
   q = {
     listFolders: db.prepare('SELECT id, path, label FROM folders ORDER BY label COLLATE NOCASE'),
     getFolder: db.prepare('SELECT id, path, label FROM folders WHERE id = ?'),
+    folderRulesHash: db.prepare('SELECT rules_hash AS hash FROM folders WHERE id = ?'),
+    setRulesHash: db.prepare('UPDATE folders SET rules_hash = ? WHERE id = ?'),
     insertFolder: db.prepare('INSERT INTO folders (path, label) VALUES (?, ?) RETURNING id, path, label'),
     deleteFolder: db.prepare('DELETE FROM folders WHERE id = ?'),
     deleteFolderSamples: db.prepare('DELETE FROM samples WHERE folder_id = ?'),
-    folderSampleIds: db.prepare('SELECT id FROM samples WHERE folder_id = ?'),
+    // One page of a folder's rows, for syncFolder (keyset: id > ?).
+    folderRows: db.prepare(`
+      SELECT id, path, size_bytes AS size, date_modified AS mtime, date_added AS added, tags_edited AS edited
+      FROM samples WHERE folder_id = ? AND id > ? ORDER BY id LIMIT ?`),
 
     upsertSample: db.prepare(`
       INSERT INTO samples (path, filename, folder_id, size_bytes, format, date_added, date_modified)
@@ -77,10 +96,14 @@ function open(file) {
         date_modified = excluded.date_modified
       RETURNING id, tags_edited`),
     getByPath: db.prepare('SELECT id, path, filename, folder_id, size_bytes, date_modified, tags_edited FROM samples WHERE path = ?'),
+    folderIdByPath: db.prepare('SELECT folder_id AS folderId FROM samples WHERE path = ?'),
     getById: db.prepare('SELECT id, path, filename, folder_id, tags_edited FROM samples WHERE id = ?'),
     deleteByPath: db.prepare('DELETE FROM samples WHERE path = ?'),
-    deleteById: db.prepare('DELETE FROM samples WHERE id = ?'),
-    deleteUnderDir: db.prepare("DELETE FROM samples WHERE substr(path, 1, length(?) + 1) = ? || '/'"),
+    deleteByIdPath: db.prepare('DELETE FROM samples WHERE id = ? AND path = ?'),
+    // Everything below a folder: path in [dir + '/', dir + '0') — '0' sorts
+    // right after '/', so this is a range the path index can use.
+    pathsUnderDir: db.prepare('SELECT path, folder_id AS folderId FROM samples WHERE path >= ? AND path < ?'),
+    deleteUnderDir: db.prepare('DELETE FROM samples WHERE path >= ? AND path < ?'),
     movePath: db.prepare(`
       UPDATE samples SET path = @newPath, filename = @filename, folder_id = @folderId, format = @format
       WHERE path = @oldPath RETURNING id, tags_edited`),
@@ -108,7 +131,7 @@ function open(file) {
     listHidden: db.prepare('SELECT path FROM hidden_dirs ORDER BY path'),
     hide: db.prepare('INSERT OR IGNORE INTO hidden_dirs (path) VALUES (?)'),
     unhide: db.prepare('DELETE FROM hidden_dirs WHERE path = ?'),
-    unhideUnder: db.prepare("DELETE FROM hidden_dirs WHERE path = ? OR substr(path, 1, length(?) + 1) = ? || '/'"),
+    unhideUnder: db.prepare('DELETE FROM hidden_dirs WHERE path = ? OR (path >= ? AND path < ?)'),
     untaggedCount: db.prepare(`
       SELECT count(*) AS n FROM samples s
       WHERE NOT EXISTS (SELECT 1 FROM sample_tags st WHERE st.sample_id = s.id)`),
@@ -119,6 +142,56 @@ function close() {
   if (db) db.close();
   db = null;
 }
+
+// Every write in one transaction (nested ones become savepoints).
+const batch = (fn) => db.transaction(fn)();
+
+// --- change log -----------------------------------------------------------
+//
+// What changed since the page last heard, so it can update just that:
+// samples added (+1) / removed (-1) / updated (0) per directory, or `all`
+// for anything broader (folders, hidden folders, tag rules). Each change
+// gets a sequence number; listDirs reports the latest, so the page can tell
+// which changes a fresh read already includes.
+
+let seq = 0;
+let changes = newChanges();
+
+function newChanges() {
+  return { all: false, dirs: new Map(), from: 0, to: 0 };
+}
+
+function bump() {
+  seq++;
+  if (!changes.from) changes.from = seq;
+  changes.to = seq;
+}
+
+function changedFile(folderId, p, delta) {
+  const dir = p.slice(0, p.lastIndexOf('/'));
+  const key = folderId + '\0' + dir;
+  const hit = changes.dirs.get(key);
+  if (hit) hit.delta += delta;
+  else changes.dirs.set(key, { folderId, dir, delta });
+  bump();
+}
+
+function changedAll() {
+  changes.all = true;
+  bump();
+}
+
+// The changes so far (null if none), and start a new list.
+function takeChanges() {
+  if (!changes.to) return null;
+  const c = changes;
+  changes = newChanges();
+  return { all: c.all, dirs: c.all ? [] : [...c.dirs.values()], from: c.from, to: c.to };
+}
+
+// SQL for "path is below dir", as a range the path index can use.
+const under = (col) => `(${col} >= ? AND ${col} < ?)`;
+const range = (dir) => [dir + '/', dir + '0'];
 
 // --- tags -----------------------------------------------------------------
 
@@ -151,7 +224,8 @@ const setTags = (sampleId, names) => db.transaction(() => {
   return q.sampleTags.all(sampleId).map((t) => t.name);
 })();
 
-// Directories that directly contain samples, with counts, for the folder tree.
+// Directories that directly contain samples, with counts, for the folder tree,
+// and the change number it's current as of (see takeChanges).
 // (Splitting in JS is ~5x faster than doing the dirname in SQL.)
 function listDirs() {
   const counts = new Map();
@@ -162,14 +236,22 @@ function listDirs() {
     if (hit) hit.n++;
     else counts.set(key, { folderId, dir, n: 1 });
   }
-  return [...counts.values()];
+  return { dirs: [...counts.values()], version: seq };
 }
 
 // --- hidden folders -----------------------------------------------------------
 
 const listHidden = () => q.listHidden.all().map((r) => r.path);
-const hideDir = (dir) => q.hide.run(dir);
-const unhideDir = (dir) => q.unhide.run(dir);
+
+function hideDir(dir) {
+  q.hide.run(dir);
+  changedAll();
+}
+
+function unhideDir(dir) {
+  q.unhide.run(dir);
+  changedAll();
+}
 
 // SQL excluding samples under hidden folders — except a hidden folder you're
 // explicitly browsing (or a folder inside one), which shows its contents.
@@ -177,15 +259,17 @@ function hiddenClause(browsingDirs = []) {
   const browsing = (h) => browsingDirs.some((d) => d === h || d.startsWith(h + '/'));
   const hidden = listHidden().filter((h) => !browsing(h));
   return {
-    sql: hidden.map(() => "substr(s.path, 1, length(?) + 1) != ? || '/'").join(' AND '),
-    params: hidden.flatMap((h) => [h, h]),
+    sql: hidden.map(() => `NOT ${under('s.path')}`).join(' AND '),
+    params: hidden.flatMap(range),
   };
 }
 
 // Make sure these tags exist (e.g. every tag named in tag-rules.json), even
 // before any sample has them.
 const ensureTags = (names) => db.transaction(() => {
-  for (const n of names.map(normalizeTag).filter(Boolean)) q.ensureTag.run(n);
+  let added = 0;
+  for (const n of names.map(normalizeTag).filter(Boolean)) added += q.ensureTag.run(n).changes;
+  if (added) changedAll();
 })();
 
 // Explicit removal: the tag and all its uses, manual and auto.
@@ -194,21 +278,40 @@ const deleteTag = (name) => db.transaction(() => {
   if (!row) return false;
   q.deleteTagLinks.run(row.id);
   q.deleteTag.run(row.id);
+  changedAll();
   return true;
 })();
 
+// Hidden folders not inside another hidden folder.
+function outermostHidden() {
+  const hidden = listHidden();
+  return hidden.filter((h) => !hidden.some((o) => h.startsWith(o + '/')));
+}
+
+// Counts leave out hidden folders: all samples minus those in hidden
+// folders, which the path index finds directly (cheaper than testing every
+// sample against every hidden folder).
 function listTags() {
-  const h = hiddenClause();
-  if (!h.sql) return { tags: q.tagCounts.all(), untagged: q.untaggedCount.get().n };
-  const tags = db
-    .prepare(`SELECT t.name, (SELECT count(*) FROM sample_tags st JOIN samples s ON s.id = st.sample_id
-                              WHERE st.tag_id = t.id AND ${h.sql}) AS count
-              FROM tags t ORDER BY t.name`)
-    .all(...h.params);
-  const untagged = db
-    .prepare(`SELECT count(*) AS n FROM samples s
-              WHERE NOT EXISTS (SELECT 1 FROM sample_tags st WHERE st.sample_id = s.id) AND ${h.sql}`)
-    .get(...h.params).n;
+  const tags = q.tagCounts.all();
+  let untagged = q.untaggedCount.get().n;
+  const hidden = outermostHidden();
+  if (hidden.length) {
+    const inHidden = `(${hidden.map(() => under('s.path')).join(' OR ')})`;
+    const params = hidden.flatMap(range);
+    const minus = new Map(
+      db
+        .prepare(`SELECT t.name, count(*) AS n FROM samples s
+                  JOIN sample_tags st ON st.sample_id = s.id JOIN tags t ON t.id = st.tag_id
+                  WHERE ${inHidden} GROUP BY t.id`)
+        .all(...params)
+        .map((r) => [r.name, r.n]),
+    );
+    for (const t of tags) t.count -= minus.get(t.name) || 0;
+    untagged -= db
+      .prepare(`SELECT count(*) AS n FROM samples s
+                WHERE ${inHidden} AND NOT EXISTS (SELECT 1 FROM sample_tags st WHERE st.sample_id = s.id)`)
+      .get(...params).n;
+  }
   return { tags, untagged };
 }
 
@@ -216,13 +319,18 @@ function listTags() {
 
 const listFolders = () => q.listFolders.all();
 const getFolder = (id) => q.getFolder.get(id);
-const addFolder = (folderPath, label) => q.insertFolder.get(folderPath, label);
+
+function addFolder(folderPath, label) {
+  changedAll();
+  return q.insertFolder.get(folderPath, label);
+}
 
 const removeFolder = (id) => db.transaction(() => {
   const f = q.getFolder.get(id);
-  if (f) q.unhideUnder.run(f.path, f.path, f.path);
+  if (f) q.unhideUnder.run(f.path, ...range(f.path));
   q.deleteFolderSamples.run(id);
   q.deleteFolder.run(id);
+  changedAll();
 })();
 
 // --- samples --------------------------------------------------------------
@@ -241,37 +349,96 @@ function sampleParams(folderId, file) {
 
 // Upsert one file and (unless hand-edited) re-derive its auto tags.
 function upsertOne(folderId, file, autoTags) {
+  const prev = q.folderIdByPath.get(file.path);
   const row = q.upsertSample.get(sampleParams(folderId, file));
   if (!row.tags_edited) applyAutoTags(row.id, autoTags);
+  if (prev && prev.folderId !== folderId) changedFile(prev.folderId, file.path, -1); // absorbed by a parent folder
+  changedFile(folderId, file.path, prev && prev.folderId === folderId ? 0 : 1);
   return row.id;
 }
 
 const upsertFile = (folderId, file, autoTags) => db.transaction(() => upsertOne(folderId, file, autoTags))();
 
-// Make the DB match a fresh walk of one folder: upsert everything found,
-// re-derive auto tags, drop rows for files that no longer exist.
-const syncFolder = (folderId, files, tagsFor) => db.transaction(() => {
-  const seen = new Set();
-  for (const file of files) seen.add(upsertOne(folderId, file, tagsFor(file.path)));
-  for (const { id } of q.folderSampleIds.all(folderId)) {
-    if (!seen.has(id)) q.deleteById.run(id);
+// Files per transaction in syncFolder.
+const CHUNK = 2000;
+
+// Make the DB match a fresh walk of one folder: add new files, update changed
+// ones, drop rows for files that no longer exist. Files with the same size and
+// mtime as last time aren't touched — unless the tag rules changed since this
+// folder was last synced (opts.rulesHash; none given = always), in which case
+// their auto tags are re-derived. Rows added after opts.startedAt (by the
+// watcher, while the walk ran) aren't treated as gone.
+//
+// A generator: one transaction per step, so syncFolderAsync can yield to the
+// event loop in between and a big library never blocks the main process long.
+function* syncSteps(folderId, files, tagsFor, { rulesHash, startedAt = Infinity } = {}) {
+  const retag = rulesHash === undefined || q.folderRulesHash.get(folderId)?.hash !== rulesHash;
+  const known = new Map(); // path -> row, for this folder's rows not seen in the walk (yet)
+  for (let last = 0; ; yield) {
+    const page = q.folderRows.all(folderId, last, CHUNK * 10);
+    for (const r of page) known.set(r.path, r);
+    if (page.length < CHUNK * 10) break;
+    last = page[page.length - 1].id;
   }
-})();
+
+  let retagged = 0;
+  for (let i = 0; i < files.length; i += CHUNK) {
+    if (!q.getFolder.get(folderId)) return; // removed mid-sync
+    batch(() => {
+      for (const file of files.slice(i, i + CHUNK)) {
+        const row = known.get(file.path);
+        known.delete(file.path);
+        if (!row || row.size !== file.size || row.mtime !== file.mtime) {
+          upsertOne(folderId, file, tagsFor(file.path));
+        } else if (retag && !row.edited) {
+          applyAutoTags(row.id, tagsFor(file.path));
+          retagged++;
+        }
+      }
+    });
+    yield;
+  }
+
+  const gone = [...known.values()].filter((r) => r.added < startedAt);
+  for (let i = 0; i < gone.length; i += CHUNK) {
+    batch(() => {
+      for (const r of gone.slice(i, i + CHUNK)) {
+        if (q.deleteByIdPath.run(r.id, r.path).changes) changedFile(folderId, r.path, -1);
+      }
+    });
+    yield;
+  }
+  if (retagged) changedAll(); // auto tags may have changed anywhere
+  q.setRulesHash.run(rulesHash ?? null, folderId);
+}
+
+// All at once, in one transaction (tests, small folders).
+const syncFolder = (folderId, files, tagsFor, opts) => batch(() => {
+  for (const _ of syncSteps(folderId, files, tagsFor, opts));
+});
+
+async function syncFolderAsync(folderId, files, tagsFor, opts) {
+  for (const _ of syncSteps(folderId, files, tagsFor, opts)) await new Promise(setImmediate);
+}
 
 const getByPath = (p) => q.getByPath.get(p);
 const getById = (id) => q.getById.get(id);
 const hasPath = (p) => !!q.getByPath.get(p);
 
 const removePath = (p) => db.transaction(() => {
-  q.deleteByPath.run(p);
+  const row = q.folderIdByPath.get(p);
+  if (row && q.deleteByPath.run(p).changes) changedFile(row.folderId, p, -1);
 })();
 
 const removeDir = (dir) => db.transaction(() => {
-  q.deleteUnderDir.run(dir, dir);
+  const rows = q.pathsUnderDir.all(...range(dir));
+  q.deleteUnderDir.run(...range(dir));
+  for (const r of rows) changedFile(r.folderId, r.path, -1);
 })();
 
 // Rename/move detected by the watcher: keep the row (and its manual tags).
 const movePath = (oldPath, newPath, folderId, autoTags) => db.transaction(() => {
+  const prev = q.folderIdByPath.get(oldPath);
   const row = q.movePath.get({
     oldPath,
     newPath,
@@ -280,6 +447,10 @@ const movePath = (oldPath, newPath, folderId, autoTags) => db.transaction(() => 
     format: path.extname(newPath).slice(1).toLowerCase(),
   });
   if (row && !row.tags_edited) applyAutoTags(row.id, autoTags);
+  if (row) {
+    changedFile(prev.folderId, oldPath, -1);
+    changedFile(folderId, newPath, 1);
+  }
   return row;
 })();
 
@@ -307,8 +478,8 @@ function listSamples(filter = {}) {
 
   // Any directory in the tree (a watched folder or a subfolder): everything below it.
   if (dirs.length) {
-    where.push(`(${dirs.map(() => "substr(s.path, 1, length(?) + 1) = ? || '/'").join(' OR ')})`);
-    for (const d of dirs) params.push(d, d);
+    where.push(`(${dirs.map(() => under('s.path')).join(' OR ')})`);
+    for (const d of dirs) params.push(...range(d));
   }
   if (filter.folderId) {
     where.push('s.folder_id = ?');
@@ -382,10 +553,13 @@ function listSamples(filter = {}) {
   const rows = db.prepare(sql).all(...params);
   for (const r of rows) r.tags = r.tags ? r.tags.split(SEP) : [];
   // Total = everything not hidden (what an unfiltered view would show).
-  const h = hiddenClause();
-  const total = h.sql
-    ? db.prepare(`SELECT count(*) AS n FROM samples s WHERE ${h.sql}`).get(...h.params).n
-    : q.count.get().n;
+  const hiddenDirs = outermostHidden();
+  let total = q.count.get().n;
+  if (hiddenDirs.length) {
+    total -= db
+      .prepare(`SELECT count(*) AS n FROM samples s WHERE ${hiddenDirs.map(() => under('s.path')).join(' OR ')}`)
+      .get(...hiddenDirs.flatMap(range)).n;
+  }
   return { rows, total };
 }
 
@@ -397,7 +571,10 @@ module.exports = {
   addFolder,
   removeFolder,
   syncFolder,
+  syncFolderAsync,
   upsertFile,
+  batch,
+  takeChanges,
   getByPath,
   getById,
   hasPath,
