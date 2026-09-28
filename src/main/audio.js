@@ -2,6 +2,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFile } = require('child_process');
+const convcache = require('./convcache');
 
 // Chromium's decoder (used by the renderer's Web Audio player) can't read
 // AIFF, which is common in Logic libraries. Rewrap AIFF/AIFC PCM as WAV.
@@ -77,16 +78,33 @@ function aiffToWav(buf) {
 
   const bytesPer = Math.ceil(bits / 8);
   const dataLen = Math.min(frames * channels * bytesPer, ssnd.length - (ssnd.length % (bytesPer * channels)));
-  const data = Buffer.from(ssnd.subarray(0, dataLen));
+
+  // One allocation for header + data, owning its whole ArrayBuffer (not a
+  // slice of Node's pool), so the page can decode it without another copy.
+  const out = Buffer.allocUnsafeSlow(44 + dataLen);
+  const data = out.subarray(44);
+  ssnd.copy(data, 0, 0, dataLen);
 
   if (bytesPer === 1) {
     if (signed8) for (let i = 0; i < data.length; i++) data[i] ^= 0x80;
   } else if (swap) {
-    for (let i = 0; i + bytesPer <= data.length; i += bytesPer) {
-      for (let a = i, b = i + bytesPer - 1; a < b; a++, b--) {
-        const t = data[a];
-        data[a] = data[b];
-        data[b] = t;
+    // Native swaps for the common sizes; 24-bit only has to trade its outer bytes.
+    if (bytesPer === 2) data.swap16();
+    else if (bytesPer === 4) data.swap32();
+    else if (bytesPer === 8) data.swap64();
+    else if (bytesPer === 3) {
+      for (let i = 0; i + 3 <= data.length; i += 3) {
+        const t = data[i];
+        data[i] = data[i + 2];
+        data[i + 2] = t;
+      }
+    } else {
+      for (let i = 0; i + bytesPer <= data.length; i += bytesPer) {
+        for (let a = i, b = i + bytesPer - 1; a < b; a++, b--) {
+          const t = data[a];
+          data[a] = data[b];
+          data[b] = t;
+        }
       }
     }
   }
@@ -94,7 +112,8 @@ function aiffToWav(buf) {
   // stores them the same way, so declaring the container size is correct.
   const containerBits = bytesPer * 8;
 
-  const header = Buffer.alloc(44);
+  const header = out.subarray(0, 44);
+  header.fill(0);
   header.write('RIFF', 0, 'ascii');
   header.writeUInt32LE(36 + data.length, 4);
   header.write('WAVE', 8, 'ascii');
@@ -108,30 +127,35 @@ function aiffToWav(buf) {
   header.writeUInt16LE(containerBits, 34);
   header.write('data', 36, 'ascii');
   header.writeUInt32LE(data.length, 40);
-  return Buffer.concat([header, data]);
+  return out;
 }
 
 // CAF (Apple Loops: usually AAC, sometimes ALAC/PCM) isn't a container
 // Chromium can open. macOS's afconvert handles every CAF codec, ~35ms/loop.
+// Converted once to 24-bit PCM — the format crops are cut in, so what you
+// hear is what you drag — and kept in the conversion cache (convcache.js).
 let tmpSeq = 0;
-async function cafToWav(filePath) {
-  const out = path.join(os.tmpdir(), `sm-caf-${process.pid}-${++tmpSeq}.wav`);
+async function cafToWav(filePath, signal) {
+  const st = await fs.promises.stat(filePath);
+  const key = convcache.keyFor(filePath, st);
+  const hit = convcache.lookup(key);
+  if (hit) return fs.promises.readFile(hit, { signal });
+  const out = convcache.enabled() ? convcache.tempFor(key) : path.join(os.tmpdir(), `sm-caf-${process.pid}-${++tmpSeq}.wav`);
   try {
-    await new Promise((resolve, reject) => {
-      execFile('/usr/bin/afconvert', ['-f', 'WAVE', '-d', 'LEF32', filePath, out], (err, _o, stderr) =>
-        err ? reject(new Error(`afconvert failed: ${stderr || err.message}`)) : resolve());
-    });
-    return await fs.promises.readFile(out);
+    await afconvert(['-f', 'WAVE', '-d', 'LEI24', filePath, out], signal);
+    if (convcache.enabled()) return await fs.promises.readFile(convcache.commit(key, out), { signal });
+    return await fs.promises.readFile(out, { signal });
   } finally {
-    fs.promises.unlink(out).catch(() => {});
+    fs.promises.unlink(out).catch(() => {}); // committed: already renamed away
   }
 }
 
-// Bytes the renderer can hand straight to decodeAudioData.
-async function readPlayable(filePath) {
+// Bytes the renderer can hand straight to decodeAudioData. `signal` aborts
+// the read or conversion when the page has moved on to another sample.
+async function readPlayable(filePath, signal) {
   const ext = path.extname(filePath).slice(1).toLowerCase();
-  if (ext === 'caf') return cafToWav(filePath);
-  const buf = await fs.promises.readFile(filePath);
+  if (ext === 'caf') return cafToWav(filePath, signal);
+  const buf = await fs.promises.readFile(filePath, { signal });
   if (ext === 'aif' || ext === 'aiff' || ext === 'aifc') return aiffToWav(buf);
   return buf;
 }
@@ -186,10 +210,10 @@ function sliceWav(buf, startSec, endSec) {
   return Buffer.concat([head, body]);
 }
 
-function afconvert(args) {
+function afconvert(args, signal) {
   return new Promise((resolve, reject) => {
-    execFile('/usr/bin/afconvert', args, (err, _o, stderr) =>
-      err ? reject(new Error(`afconvert failed: ${stderr || err.message}`)) : resolve());
+    execFile('/usr/bin/afconvert', args, { signal }, (err, _o, stderr) =>
+      err ? reject(err.name === 'AbortError' ? err : new Error(`afconvert failed: ${stderr || err.message}`)) : resolve());
   });
 }
 
@@ -200,6 +224,7 @@ async function toWav(filePath) {
   const ext = path.extname(filePath).slice(1).toLowerCase();
   if (ext === 'wav' || ext === 'wave') return fs.promises.readFile(filePath);
   if (ext === 'aif' || ext === 'aiff' || ext === 'aifc') return aiffToWav(await fs.promises.readFile(filePath));
+  if (ext === 'caf') return cafToWav(filePath);
   const out = path.join(os.tmpdir(), `sm-crop-${process.pid}-${++tmpSeq}.wav`);
   try {
     await afconvert(['-f', 'WAVE', '-d', 'LEI24', filePath, out]);

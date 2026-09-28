@@ -54,6 +54,21 @@ test('24-bit mono AIFF at 48k', () => {
   assert.deepStrictEqual([0, 1, 2].map((i) => wav.readIntLE(44 + i * 3, 3)), [8388607, -1, 1234]);
 });
 
+test('32-bit and long 16-bit AIFF swap correctly (native swap paths)', () => {
+  const s32 = Array.from({ length: 300 }, (_, i) => (i * 7919 - 1e6) | 0);
+  const w32 = aiffToWav(aiff({ channels: 2, bits: 32, rate: 44100, samples: s32 }));
+  assert.deepStrictEqual(s32.map((_, i) => w32.readInt32LE(44 + i * 4)), s32);
+  const s16 = Array.from({ length: 1000 }, (_, i) => ((i * 97) % 65536) - 32768);
+  const w16 = aiffToWav(aiff({ channels: 1, bits: 16, rate: 44100, samples: s16 }));
+  assert.deepStrictEqual(s16.map((_, i) => w16.readInt16LE(44 + i * 2)), s16);
+});
+
+test('the WAV owns its whole ArrayBuffer (no copy needed to decode it)', () => {
+  const wav = aiffToWav(aiff({ channels: 1, bits: 16, rate: 44100, samples: [1, 2, 3] }));
+  assert.strictEqual(wav.byteOffset, 0);
+  assert.strictEqual(wav.buffer.byteLength, wav.length);
+});
+
 test('AIFC sowt is already little-endian', () => {
   const src = aiff({ kind: 'AIFC', compression: 'sowt', channels: 1, bits: 16, rate: 44100, samples: [0x0102] });
   const wav = aiffToWav(src);

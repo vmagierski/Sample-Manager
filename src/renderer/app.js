@@ -2,7 +2,9 @@
 
 const ROW_H = 30;
 const OVERSCAN = 8;
-const CACHE_SIZE = 12; // decoded AudioBuffers kept for instant re-audition
+const CACHE_BYTES = 512 * 1024 ** 2; // decoded audio kept for instant re-audition (~20 min stereo)
+const PREFETCH_MAX_BYTES = 8 * 1024 ** 2; // only small files are loaded ahead of the cursor
+const PREFETCH_DELAY_MS = 150; // …once browsing has paused on a sample
 
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, cls, text) => {
@@ -1277,7 +1279,7 @@ const player = {
   startTime: 0,
   playing: false,
   req: 0,
-  cache: new Map(), // id -> AudioBuffer (insertion order = LRU)
+  cache: new BufferCache(CACHE_BYTES),
   peaks: new WeakMap(),
   view: null, // zoomed waveform window { start, end } (seconds), or null = whole file
   loop: false, // see the loop section: on with a region, off by default
@@ -1301,19 +1303,34 @@ function audioCtx() {
   return player.ctx;
 }
 
-async function loadBuffer(row) {
-  const hit = player.cache.get(row.id);
-  if (hit) {
-    player.cache.delete(row.id);
-    player.cache.set(row.id, hit);
-    return hit;
-  }
-  const bytes = await window.sm.readSample(row.id);
-  const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-  const buf = await audioCtx().decodeAudioData(ab);
-  player.cache.set(row.id, buf);
-  while (player.cache.size > CACHE_SIZE) player.cache.delete(player.cache.keys().next().value);
-  return buf;
+const loadBuffer = createLoader(
+  player.cache,
+  (id) => window.sm.readSample(id),
+  (ab) => audioCtx().decodeAudioData(ab),
+);
+
+// Neighbours of the sample now playing, loaded while you listen so the next
+// arrow key plays at once. Small files only, one at a time, and dropped the
+// moment a real play asks for anything.
+const prefetch = { gen: 0, timer: 0 };
+
+function cancelPrefetch() {
+  prefetch.gen++;
+  clearTimeout(prefetch.timer);
+}
+
+function schedulePrefetch(row) {
+  cancelPrefetch();
+  const gen = prefetch.gen;
+  prefetch.timer = setTimeout(async () => {
+    const i = state.rows[state.cursor] === row ? state.cursor : state.rows.indexOf(row);
+    if (i < 0) return;
+    for (const next of [state.rows[i + 1], state.rows[i - 1]]) {
+      if (gen !== prefetch.gen) return;
+      if (!next || player.cache.has(next.id) || !(next.size <= PREFETCH_MAX_BYTES)) continue;
+      await loadBuffer(next.id, () => gen !== prefetch.gen).catch(() => null);
+    }
+  }, PREFETCH_DELAY_MS);
 }
 
 function stopSource() {
@@ -1394,9 +1411,14 @@ async function playRow(row, from = 0) {
   player.error = null;
   renderPlayer();
   updateRowClasses();
+  cancelPrefetch();
+  const stale = () => req !== player.req;
   let buf;
   try {
-    buf = await loadBuffer(row);
+    // Null only if main dropped our read for a newer one: try again unless
+    // that newer one was ours too.
+    for (let tries = 0; !buf && !stale() && tries < 3; tries++) buf = await loadBuffer(row.id, stale);
+    if (!buf && !stale()) throw new Error('load kept being superseded');
   } catch (err) {
     if (req !== player.req) return;
     player.error = `Can't play ${row.filename}`;
@@ -1406,7 +1428,9 @@ async function playRow(row, from = 0) {
   }
   if (req !== player.req) return; // user already moved on
   player.buf = buf;
+  player.cache.pin(row.id);
   startAt(from);
+  schedulePrefetch(row);
 
   if (row.durationMs == null) {
     row.durationMs = Math.round(buf.duration * 1000);

@@ -6,6 +6,8 @@ const scanner = require('./scanner');
 const drag = require('./drag');
 const { LibraryWatcher } = require('./watcher');
 const { readPlayable } = require('./audio');
+const convcache = require('./convcache');
+const { latestWins } = require('./latest');
 const crop = require('./crop');
 const quick = require('./quick');
 
@@ -22,6 +24,10 @@ if (app.isPackaged && !fs.existsSync(RULES_PATH)) {
   fs.mkdirSync(path.dirname(RULES_PATH), { recursive: true });
   fs.copyFileSync(BUNDLED_RULES, RULES_PATH);
 }
+
+// CAF → WAV conversions, kept across launches (convcache.js).
+const CONVERTED_DIR = process.env.SM_CACHE_DIR || path.join(app.getPath('home'), 'Library', 'Caches', 'Sample Manager', 'Converted');
+const CONVERTED_CAP = 2 * 1024 ** 3;
 
 let win = null;
 let watcher = null;
@@ -215,10 +221,13 @@ function registerIpc() {
     if (res.canceled || !res.filePath) return null;
     return crop.saveTo(id, res.filePath);
   });
-  ipcMain.handle('sample:read', async (_e, id) => {
+  // Newest wins per window: arrowing past a sample aborts its read or
+  // conversion, and resolves null instead of sending its bytes.
+  const readLatest = latestWins();
+  ipcMain.handle('sample:read', async (e, id) => {
     const row = db.getById(id);
     if (!row) throw new Error('unknown sample');
-    return readPlayable(row.path);
+    return readLatest(e.sender.id, id, (signal) => readPlayable(row.path, signal));
   });
   ipcMain.handle('sample:reveal', (_e, id) => {
     const row = db.getById(id);
@@ -509,6 +518,11 @@ app.whenReady().then(() => {
   loadRules();
   ensureAppMusicDir();
   crop.prune(); // dragged crops are only kept for a week
+  try {
+    convcache.configure(CONVERTED_DIR, CONVERTED_CAP);
+  } catch (err) {
+    console.warn(`conversion cache off: ${err.message}`); // CAFs still play, just converted each time
+  }
   setInterval(() => crop.prune(), 86400e3).unref();
   watcher = new LibraryWatcher({ onChange: notifyChanged });
   registerIpc();
