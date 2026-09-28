@@ -24,7 +24,7 @@ test('a library from before rules_hash is upgraded in place', () => {
   assert.strictEqual(db.takeChanges(), null); // hash stored: nothing re-tagged
   db.close();
   const check = new Database(file);
-  assert.strictEqual(check.pragma('user_version', { simple: true }), 1);
+  assert.strictEqual(check.pragma('user_version', { simple: true }), 2);
   check.close();
 });
 

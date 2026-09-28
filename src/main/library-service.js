@@ -18,6 +18,9 @@ const { latestWins } = require('./latest');
 //   windows: handlers for the pages' requests; the last argument is
 //            { owner } — one per window connection, for newest-wins reads
 //   closed(owner): a window's connection went away
+// Rows per getRows call: a screenful and then some, not the library.
+const ROWS_MAX = 2000;
+
 function createLibrary({ broadcast, toMain }) {
   let config = null;
   let watcher = null;
@@ -258,6 +261,9 @@ function createLibrary({ broadcast, toMain }) {
 
   const windows = {
     listSamples: whenReady((filter) => db.listSamples(filter)),
+    // The main list: a view's ids, then rows for what's on screen.
+    listIds: whenReady((filter) => db.listIds(filter)),
+    getRows: whenReady((ids) => db.getRows([].concat(ids || []).slice(0, ROWS_MAX))),
     listTags: whenReady(() => db.listTags()),
     listDirs: whenReady(() => db.listDirs()),
     listFolders: whenReady(() => db.listFolders()),
