@@ -12,6 +12,7 @@ const v8 = require('v8');
 const { execFileSync } = require('child_process');
 
 const REPO = path.join(__dirname, '..');
+const { monitorEventLoopDelay } = require('perf_hooks');
 const { make, parseArgs } = require('./make-bench-library');
 
 // --- the app APIs we time (kept in one place, to adapt as they change) -------
@@ -21,11 +22,14 @@ const app = {
   scanner: () => require(path.join(REPO, 'src/main/scanner')),
   audio: () => require(path.join(REPO, 'src/main/audio')),
   listSamples: (filter) => app.db().listSamples(filter),
-  listDirs: () => app.db().listDirs(),
+  listDirs: () => app.db().listDirs().dirs,
   listTags: () => app.db().listTags(),
   walk: (root) => app.scanner().walk(root),
+  // As the app runs it: chunked, yielding between chunks, skipping unchanged files.
   syncFolder: (folderId, root, files) =>
-    app.db().syncFolder(folderId, files, (p) => app.scanner().tagsFor(path.relative(root, p), p)),
+    app.db().syncFolderAsync(folderId, files, (p) => app.scanner().tagsFor(path.relative(root, p), p), {
+      rulesHash: app.scanner().rulesHash(),
+    }),
   readPlayable: (file) => app.audio().readPlayable(file),
   cropToWav: (file, start, end) => app.audio().cropToWav(file, start, end),
 };
@@ -129,11 +133,15 @@ async function benchScan(opts) {
     const t0 = now();
     const files = await app.walk(root);
     const t1 = now();
-    app.syncFolder(folder.id, root, files);
+    const lag = monitorEventLoopDelay({ resolution: 1 });
+    lag.enable();
+    await app.syncFolder(folder.id, root, files);
+    lag.disable();
     const t2 = now();
     const k = `@${(files.length / 1000).toFixed(0)}k files`;
     record(`scan ${k}`, `${name}: walk (async)`, t1 - t0, null);
-    record(`scan ${k}`, `${name}: syncFolder (blocks main)`, t2 - t1, target);
+    record(`scan ${k}`, `${name}: syncFolder`, t2 - t1, target);
+    record(`scan ${k}`, `${name}: longest main-process block`, lag.max / 1e6, 50);
   };
   await pass('first scan', null);
   await pass('rescan, nothing changed', 100);
