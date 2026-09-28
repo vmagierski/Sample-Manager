@@ -22,6 +22,16 @@ const app = {
   scanner: () => require(path.join(REPO, 'src/main/scanner')),
   audio: () => require(path.join(REPO, 'src/main/audio')),
   listSamples: (filter) => app.db().listSamples(filter),
+  // What the main list does for a view: the ordered ids, then rows for the first screen.
+  listView: (filter) => {
+    const { ids, total } = app.db().listIds(filter);
+    return { ids, total, rows: app.db().getRows(ids.subarray(0, SCREEN_ROWS)) };
+  },
+  // The same right after a library change, which drops the in-memory name order.
+  listViewCold: (filter) => {
+    app.db().dropViewCaches();
+    return app.listView(filter);
+  },
   listDirs: () => app.db().listDirs().dirs,
   listTags: () => app.db().listTags(),
   walk: (root) => app.scanner().walk(root),
@@ -33,6 +43,8 @@ const app = {
   readPlayable: (file) => app.audio().readPlayable(file),
   cropToWav: (file, start, end) => app.audio().cropToWav(file, start, end),
 };
+
+const SCREEN_ROWS = 60; // rows the main list fetches for a screen (plus some ahead)
 
 // A query as the main window runs it: rank on, no limit.
 const view = (f = {}) => ({ search: '', tags: [], untagged: false, dirs: [], rank: true, ...f });
@@ -64,7 +76,9 @@ function record(group, name, value, target, unit = 'ms', note = '') {
 
 async function benchQueries(opts) {
   const db = app.db();
+  const t0 = now();
   db.open(path.join(opts.dir, 'library.db'));
+  const opened = now() - t0;
   const folders = db.listFolders();
   const user = folders.find((f) => f.label === 'User Library') || folders[0];
   const factory = folders.find((f) => f.label === 'Logic Factory') || folders[0];
@@ -74,9 +88,11 @@ async function benchQueries(opts) {
   const pack = packOf(dirs.find((d) => d.folderId === user.id && d.dir.length > user.path.length + 1));
   const n = db.listSamples({ limit: 1 }).total;
   const label = `@${Math.round(n / 1000)}k`;
+  record(`queries ${label}`, 'open the library', opened, null, 'ms', 'includes upgrading an older library once');
 
-  // Main-list queries: SQL time, then the structured-clone cost of sending the
-  // rows to the renderer (v8.serialize is what IPC uses).
+  // Main-list queries: the view's ids plus a screen of rows, then the
+  // structured-clone cost of sending them to the page (v8.serialize is what
+  // IPC uses).
   const cases = [
     ['list: unfiltered', view()],
     ['list: watched folder', view({ dirs: [user.path] })],
@@ -88,13 +104,22 @@ async function benchQueries(opts) {
     ['search: "vinyl drum loop"', view({ search: 'vinyl drum loop' })],
     ['search: "zzqx" (no hits)', view({ search: 'zzqx' })],
     ['search: "kick" in folder', view({ search: 'kick', dirs: [user.path] })],
+    ['search: #kick + "loop"', view({ tags: ['kick'], search: 'loop' })],
+    ['search: "fx" (2 letters)', view({ search: 'fx' })],
+    ['search: "k" (1 letter)', view({ search: 'k' })],
+    ['search: "loop" (60% of the library)', view({ search: 'loop' })],
   ];
   for (const [name, filter] of cases) {
-    const t = await timeIt(() => app.listSamples(filter), opts.runs);
-    const rows = t.out.rows;
-    const c = await timeIt(() => v8.serialize(rows), Math.min(opts.runs, 3));
+    const t = await timeIt(() => app.listView(filter), opts.runs);
+    const sent = { ids: t.out.ids, total: t.out.total, rows: t.out.rows };
+    const c = await timeIt(() => v8.serialize(sent), Math.min(opts.runs, 3));
     record(`queries ${label}`, name, t.median + c.median, 50, 'ms',
-      `sql ${t.median.toFixed(0)} + clone ${c.median.toFixed(0)}, ${rows.length} rows, ${mb(v8.serialize(rows).length)}`);
+      `query ${t.median.toFixed(0)} + clone ${c.median.toFixed(0)}, ${t.out.ids.length} ids, ${mb(v8.serialize(sent).length)}`);
+  }
+  // Right after a library change (a file added, removed, renamed): the name order is rebuilt once.
+  for (const [name, filter] of [['list: unfiltered', view()], ['search: "kick"', view({ search: 'kick' })]]) {
+    const t = await timeIt(() => app.listViewCold(filter), opts.runs);
+    record(`queries ${label}`, `${name}, just after a change`, t.median, 150, 'ms', `${t.out.ids.length} ids`);
   }
 
   let t = await timeIt(() => app.listDirs(), opts.runs);
@@ -109,10 +134,10 @@ async function benchQueries(opts) {
   try {
     t = await timeIt(() => app.listTags(), opts.runs);
     record(`queries ${label}`, 'listTags, 1 hidden folder', t.median, 50);
-    t = await timeIt(() => app.listSamples(view()), opts.runs);
-    record(`queries ${label}`, 'list: unfiltered, 1 hidden folder', t.median, 50, 'ms', `sql only, ${t.out.rows.length} rows`);
-    t = await timeIt(() => app.listSamples(view({ search: 'kick' })), opts.runs);
-    record(`queries ${label}`, 'search: "kick", 1 hidden folder', t.median, 50, 'ms', `sql only`);
+    t = await timeIt(() => app.listView(view()), opts.runs);
+    record(`queries ${label}`, 'list: unfiltered, 1 hidden folder', t.median, 50, 'ms', `query only, ${t.out.ids.length} ids`);
+    t = await timeIt(() => app.listView(view({ search: 'kick' })), opts.runs);
+    record(`queries ${label}`, 'search: "kick", 1 hidden folder', t.median, 50, 'ms', `query only`);
   } finally {
     db.unhideDir(hidden);
   }

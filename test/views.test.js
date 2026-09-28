@@ -267,6 +267,17 @@ test('an existing library gets the index, counts and name order when upgraded', 
   assert.deepStrictEqual(db.listSamples({ search: 'kick' }).rows.map((r) => r.filename), ['Kick 1.wav']);
   assert.deepStrictEqual(db.listSamples({ search: 'fx' }).rows.map((r) => r.filename), ['fx.wav']);
   assert.deepStrictEqual(db.listSamples({}).rows.map((r) => r.filename), ['fx.wav', 'Kick 1.wav', 'pad.wav']);
+  // An older version opens it (setting user_version back, and adding a
+  // sample without indexing it); the next open rebuilds everything.
+  db.close();
+  const back = new Database(old);
+  back.exec(`PRAGMA user_version = 1;
+    INSERT INTO samples (path, filename, folder_id) VALUES ('/o/c/Snare new.wav', 'Snare new.wav', 1);`);
+  back.close();
+  db.open(old);
+  assert.deepStrictEqual(db.listSamples({ search: 'snare' }).rows.map((r) => r.filename), ['Snare new.wav']);
+  assert.deepStrictEqual(db.listDirs().dirs.map((d) => [d.dir, d.n]).sort(), [['/o/a', 1], ['/o/b', 2], ['/o/c', 1]]);
+  assert.strictEqual(db.listTags().untagged, 3);
   db.close();
   db.open(file);
 });
