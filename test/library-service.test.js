@@ -74,6 +74,14 @@ test('add a folder: scanned, tagged, and the pages are told', async () => {
   assert.strictEqual(await lib.main.isRuleTag('pad'), false);
 });
 
+test('the main list: a view is ids, rows come by id', async () => {
+  const { ids, total } = await lib.windows.listIds({ rank: true }, ctx(1));
+  assert.ok(ids instanceof Int32Array);
+  assert.strictEqual(total, 2);
+  const rows = await lib.windows.getRows([ids[1], ids[0]], ctx(1));
+  assert.deepStrictEqual(rows.map((r) => r.filename), ['Snare 1.wav', 'Kick 1.wav']);
+});
+
 test('tag edits broadcast tags:changed', async () => {
   const [kick] = (await lib.windows.listSamples({ search: 'kick' }, ctx(1))).rows;
   events.length = 0;

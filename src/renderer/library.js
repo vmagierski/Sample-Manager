@@ -31,6 +31,8 @@
   window.sm = {
     ...window.smMain,
     listSamples: call('listSamples'),
+    listIds: call('listIds'),
+    getRows: call('getRows'),
     listTags: call('listTags'),
     listDirs: call('listDirs'),
     listFolders: call('listFolders'),

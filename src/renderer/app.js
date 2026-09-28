@@ -1,7 +1,10 @@
 'use strict';
 
 const ROW_H = 30;
+const MAX_LIST_H = 8e6; // px; browsers cap an element's height (Chromium near 16.7M, ~560k rows)
 const OVERSCAN = 8;
+const FETCH_AHEAD = 60; // rows fetched beyond the visible ones, each way
+const ROWS_KEPT = 5000; // row details kept (by id) once fetched
 const CACHE_BYTES = 512 * 1024 ** 2; // decoded audio kept for instant re-audition (~20 min stereo)
 const PREFETCH_MAX_BYTES = 8 * 1024 ** 2; // only small files are loaded ahead of the cursor
 const PREFETCH_DELAY_MS = 150; // …once browsing has paused on a sample
@@ -62,7 +65,7 @@ const ui = {
 };
 
 const state = {
-  rows: [],
+  ids: new Int32Array(0), // the list: sample ids in order (details are fetched as rows show, see rowAt)
   total: 0,
   folders: [],
   tagCounts: [],
@@ -112,14 +115,16 @@ let listLoading = 0; // list queries in flight
 // opts.reset: the user changed the view — if the current sample isn't in the
 //   new results, start at the top instead of wherever the old index lands.
 // opts.restore: a history snapshot — put selection and scroll back exactly.
+// The rows about to show are fetched before the new list replaces the old,
+// so nothing flashes blank.
 async function refreshList(opts = {}) {
   const seq = ++listSeq;
   const { restore, reset } = opts;
-  const cursorId = restore ? restore.cursorId : state.rows[state.cursor]?.id;
+  const cursorId = restore ? restore.cursorId : state.ids[state.cursor] ?? null;
   const { filter } = state;
   listLoading++;
   const res = await window.sm
-    .listSamples({
+    .listIds({
       search: [...filter.queries, filter.search].join(' '), // every word ANDed
       tags: [...filter.tags],
       untagged: filter.untagged,
@@ -129,29 +134,47 @@ async function refreshList(opts = {}) {
     .finally(() => listLoading--);
   if (seq !== listSeq) return; // a newer query superseded this one
 
-  state.rows = res.rows;
+  const { ids } = res;
+  const idx = cursorId != null ? ids.indexOf(cursorId) : -1;
+  let cursor;
+  if (idx >= 0) cursor = idx;
+  else if (reset || restore) cursor = ids.length ? 0 : -1;
+  else cursor = ids.length ? clamp(state.cursor, 0, ids.length - 1) : -1;
+  let top = ui.list.scrollTop;
+  if (restore) top = restore.scrollTop;
+  else if (reset) top = idx >= 0 ? scrollToShow(idx, top, ids.length) : 0;
+  top = clamp(top, 0, Math.max(0, listHeight(ids.length) - ui.list.clientHeight));
+  const [a, b] = rowRange(top, ids.length);
+  const loading = ensureRows([...ids.subarray(a, b), ...(cursor >= 0 ? [ids[cursor]] : [])]);
+  if (loading) {
+    await loading;
+    if (seq !== listSeq) return;
+  }
+
+  state.ids = ids;
   state.total = res.total;
-  const ids = new Set(res.rows.map((r) => r.id));
-  if (restore) state.selected = new Set(restore.selected.filter((id) => ids.has(id)));
-  else for (const id of state.selected) if (!ids.has(id)) state.selected.delete(id);
-  const idx = cursorId != null ? res.rows.findIndex((r) => r.id === cursorId) : -1;
-  if (idx >= 0) state.cursor = idx;
-  else if (reset || restore) state.cursor = res.rows.length ? 0 : -1;
-  else state.cursor = res.rows.length ? clamp(state.cursor, 0, res.rows.length - 1) : -1;
-  if (state.cursor >= 0 && !state.selected.size) state.selected.add(res.rows[state.cursor].id);
+  const has = contains(ids, restore ? restore.selected.length : state.selected.size);
+  if (restore) state.selected = new Set(restore.selected.filter(has));
+  else for (const id of state.selected) if (!has(id)) state.selected.delete(id);
+  state.cursor = cursor;
+  if (state.cursor >= 0 && !state.selected.size) state.selected.add(ids[state.cursor]);
   state.anchor = state.cursor;
-  if (state.editing && !ids.has(state.editing.id)) state.editing = null;
+  if (state.editing && !has(state.editing.id)) state.editing = null;
   state.version++;
 
   renderCount();
   renderEmpty();
-  ui.spacer.style.height = `${res.rows.length * ROW_H}px`; // so the scrollTop below isn't clamped
-  if (restore) ui.list.scrollTop = restore.scrollTop;
-  else if (reset) {
-    if (idx >= 0) ensureVisible(idx);
-    else ui.list.scrollTop = 0;
-  }
+  ui.spacer.style.height = `${listHeight(ids.length)}px`; // so the scrollTop below isn't clamped
+  ui.list.scrollTop = top;
   renderList();
+}
+
+// A membership test for the list's ids, for `count` lookups: a Set only
+// when there are many (building one for 750k ids costs more than a few scans).
+function contains(ids, count) {
+  if (count <= 64) return (id) => ids.indexOf(id) >= 0;
+  const set = new Set(ids);
+  return (id) => set.has(id);
 }
 
 // --- back / forward ---------------------------------------------------------------
@@ -167,7 +190,7 @@ function snapshot() {
   const f = state.filter;
   return {
     filter: { search: f.search, queries: [...f.queries], tags: [...f.tags], untagged: f.untagged, dirs: [...f.dirs] },
-    cursorId: state.rows[state.cursor]?.id ?? null,
+    cursorId: state.ids[state.cursor] ?? null,
     selected: [...state.selected],
     scrollTop: ui.list.scrollTop,
   };
@@ -209,8 +232,8 @@ async function goNav(step) {
   renderRail();
   renderNav();
   await refreshList({ restore: snap });
-  const cur = state.rows[state.cursor];
-  if (cur && ui.autoplay.checked && (!player.row || player.row.id !== cur.id)) playRow(cur);
+  const cur = state.ids[state.cursor];
+  if (cur != null && ui.autoplay.checked && (!player.row || player.row.id !== cur)) playAt(state.cursor);
 }
 
 function renderNav() {
@@ -305,14 +328,14 @@ async function applyLibraryChange(c) {
 // --- rendering: header / rail ----------------------------------------------
 
 function renderCount() {
-  const n = state.rows.length.toLocaleString();
+  const n = state.ids.length.toLocaleString();
   const t = state.total.toLocaleString();
-  ui.count.textContent = state.rows.length === state.total ? `${t} samples` : `${n} of ${t} samples`;
+  ui.count.textContent = state.ids.length === state.total ? `${t} samples` : `${n} of ${t} samples`;
 }
 
 function renderEmpty() {
   ui.empty.replaceChildren();
-  if (state.rows.length) {
+  if (state.ids.length) {
     ui.empty.hidden = true;
     return;
   }
@@ -1007,18 +1030,36 @@ function renderTags() {
 // patched onto existing elements, so a row isn't swapped out from under the
 // mouse between mousedown and dragstart.
 
-function renderList(force = false) {
-  const n = state.rows.length;
-  ui.spacer.style.height = `${n * ROW_H}px`;
-  const top = ui.list.scrollTop;
+// A list too tall for the browser scrolls a shorter spacer, scaled: scroll
+// position `top` shows the rows from pixel rowTop(top) of the full list.
+const listHeight = (n) => Math.min(n * ROW_H, MAX_LIST_H);
+
+function rowScale(n) {
+  const view = ui.list.clientHeight;
+  const full = n * ROW_H - view;
+  const shown = listHeight(n) - view;
+  return full > 0 && shown > 0 ? full / shown : 1;
+}
+
+const rowTop = (top, n) => top * rowScale(n);
+
+// Rows (index range [start, end)) in the DOM for this scroll position.
+function rowRange(top, n) {
   const h = ui.list.clientHeight;
-  const start = Math.max(0, Math.floor(top / ROW_H) - OVERSCAN);
-  const end = Math.min(n, Math.ceil((top + h) / ROW_H) + OVERSCAN);
+  const y = rowTop(top, n);
+  return [Math.max(0, Math.floor(y / ROW_H) - OVERSCAN), Math.min(n, Math.ceil((y + h) / ROW_H) + OVERSCAN)];
+}
+
+function renderList(force = false) {
+  const n = state.ids.length;
+  ui.spacer.style.height = `${listHeight(n)}px`;
+  const top = ui.list.scrollTop;
+  const [start, end] = rowRange(top, n);
+  ui.rows.style.transform = `translateY(${top + start * ROW_H - rowTop(top, n)}px)`;
   const r = state.rendered;
   if (!force && r.start === start && r.end === end && r.version === state.version) return;
   state.rendered = { start, end, version: state.version };
 
-  ui.rows.style.transform = `translateY(${start * ROW_H}px)`;
   const frag = document.createDocumentFragment();
   for (let i = start; i < end; i++) frag.append(buildRow(i));
   ui.rows.replaceChildren(frag);
@@ -1026,13 +1067,34 @@ function renderList(force = false) {
 
   const input = ui.rows.querySelector('input.tag-input');
   if (input) input.focus();
+
+  // Rows not fetched yet show blank until they arrive; fetch a bit past the
+  // screen too, so scrolling on usually finds them ready.
+  const loading = ensureRows(state.ids.subarray(Math.max(0, start - FETCH_AHEAD), Math.min(n, end + FETCH_AHEAD)));
+  if (loading) loading.then(fillPending);
+}
+
+// Swap blank rows for real ones once their details are in.
+function fillPending() {
+  let filled = false;
+  for (const e of ui.rows.querySelectorAll('.row.pending')) {
+    const i = +e.dataset.i;
+    if (state.ids[i] !== +e.dataset.id || !rowAt(i)) continue;
+    e.replaceWith(buildRow(i));
+    filled = true;
+  }
+  if (filled) updateRowClasses();
 }
 
 function buildRow(i) {
-  const r = state.rows[i];
-  const row = el('div', 'row');
+  const r = rowAt(i);
+  const row = el('div', r ? 'row' : 'row pending');
   row.dataset.i = i;
-  row.dataset.id = r.id;
+  row.dataset.id = state.ids[i];
+  if (!r) {
+    row.draggable = true;
+    return row;
+  }
   const editing = state.editing && state.editing.id === r.id;
   row.draggable = !editing;
 
@@ -1083,12 +1145,20 @@ function updateRowClasses() {
   }
 }
 
+// The scroll position that shows row i, scrolling as little as possible from `top`.
+function scrollToShow(i, top, n = state.ids.length) {
+  const y = i * ROW_H;
+  const view = ui.list.clientHeight;
+  const from = rowTop(top, n);
+  if (y < from) return y / rowScale(n);
+  if (y + ROW_H > from + view) return (y + ROW_H - view) / rowScale(n);
+  return top;
+}
+
 function ensureVisible(i) {
   if (i < 0) return;
-  const top = i * ROW_H;
-  const view = ui.list.clientHeight;
-  if (top < ui.list.scrollTop) ui.list.scrollTop = top;
-  else if (top + ROW_H > ui.list.scrollTop + view) ui.list.scrollTop = top + ROW_H - view;
+  const top = scrollToShow(i, ui.list.scrollTop);
+  if (top !== ui.list.scrollTop) ui.list.scrollTop = top;
 }
 
 let scrollRaf = 0;
@@ -1104,34 +1174,93 @@ new ResizeObserver(() => {
   sizeWave();
 }).observe(ui.list);
 
+// --- row details ------------------------------------------------------------------
+//
+// The list itself is just ids. A row's details (name, folder, tags, duration)
+// are fetched from the library when it comes into view and kept by id, the
+// most recent ROWS_KEPT; a library change drops the ones it may have touched.
+
+const rowCache = new Map(); // id -> row (insertion order = least recent first)
+const rowsLoading = new Map(); // id -> promise of the fetch that brings it
+let rowGen = 0; // bumps when cached rows are dropped: fetches from before don't land
+
+const rowAt = (i) => rowCache.get(state.ids[i]);
+
+function keepRow(r) {
+  rowCache.delete(r.id);
+  rowCache.set(r.id, r);
+  if (rowCache.size > ROWS_KEPT) rowCache.delete(rowCache.keys().next().value);
+}
+
+// Fetch the rows for these ids that aren't here yet. A promise that resolves
+// once they're in — or null if they all are already.
+function ensureRows(ids) {
+  const want = [];
+  const waits = new Set();
+  for (const id of ids) {
+    if (rowCache.has(id)) continue;
+    const p = rowsLoading.get(id);
+    if (p) waits.add(p);
+    else want.push(id);
+  }
+  if (want.length) {
+    const gen = rowGen;
+    const p = window.sm
+      .getRows(want)
+      .then((rows) => {
+        if (gen === rowGen) for (const r of rows) keepRow(r);
+      })
+      .catch((err) => console.error('loading rows failed', err))
+      .finally(() => {
+        for (const id of want) if (rowsLoading.get(id) === p) rowsLoading.delete(id);
+      });
+    for (const id of want) rowsLoading.set(id, p);
+    waits.add(p);
+  }
+  return waits.size ? Promise.all(waits) : null;
+}
+
+// Forget cached rows a library change may have touched: all of them, or
+// those in the directories it names.
+function dropRows(c) {
+  rowGen++;
+  rowsLoading.clear();
+  if (c.all) {
+    rowCache.clear();
+    return;
+  }
+  const dirs = new Set(c.dirs.map((d) => d.dir));
+  for (const [id, r] of rowCache) if (dirs.has(r.path.slice(0, r.path.lastIndexOf('/')))) rowCache.delete(id);
+}
+
 // --- selection -------------------------------------------------------------------
 
 function selectSingle(i) {
-  state.selected = new Set([state.rows[i].id]);
+  state.selected = new Set([state.ids[i]]);
   state.cursor = state.anchor = i;
 }
 
 function extendTo(i) {
   if (state.anchor < 0) state.anchor = i;
   const [a, b] = state.anchor < i ? [state.anchor, i] : [i, state.anchor];
-  state.selected = new Set(state.rows.slice(a, b + 1).map((r) => r.id));
+  state.selected = new Set(state.ids.subarray(a, b + 1));
   state.cursor = i;
 }
 
 function toggleSel(i) {
-  const id = state.rows[i].id;
+  const id = state.ids[i];
   if (state.selected.has(id)) state.selected.delete(id);
   else state.selected.add(id);
   state.cursor = state.anchor = i;
 }
 
 function selectAll() {
-  state.selected = new Set(state.rows.map((r) => r.id));
+  state.selected = new Set(state.ids);
   updateRowClasses();
 }
 
 function move(delta, extend) {
-  const n = state.rows.length;
+  const n = state.ids.length;
   if (!n) return;
   const from = state.cursor < 0 ? (delta > 0 ? -1 : n) : state.cursor;
   const i = clamp(from + delta, 0, n - 1);
@@ -1140,14 +1269,17 @@ function move(delta, extend) {
   ensureVisible(i);
   renderList();
   updateRowClasses();
-  if (ui.autoplay.checked) playRow(state.rows[i]);
+  if (ui.autoplay.checked) playAt(i);
 }
 
-// Rows the user is acting on: the selection if the row is part of it, else just the row.
-function actionRows(i) {
-  const r = state.rows[i];
-  if (!state.selected.has(r.id)) return [r];
-  return state.rows.filter((x) => state.selected.has(x.id));
+// Samples the user is acting on (ids, in list order): the selection if the
+// row is part of it, else just the row.
+function actionIds(i) {
+  const id = state.ids[i];
+  if (!state.selected.has(id) || state.selected.size === 1) return [id];
+  const out = [];
+  for (const x of state.ids) if (state.selected.has(x)) out.push(x);
+  return out;
 }
 
 // --- mouse -----------------------------------------------------------------------
@@ -1159,7 +1291,7 @@ ui.rows.addEventListener('mousedown', (e) => {
   const row = e.target.closest('.row');
   if (!row) return;
   const i = +row.dataset.i;
-  const id = state.rows[i].id;
+  const id = state.ids[i];
   pendingCollapse = -1;
 
   if (e.shiftKey) {
@@ -1173,7 +1305,7 @@ ui.rows.addEventListener('mousedown', (e) => {
   } else {
     if (i !== state.cursor) recordNav('click');
     selectSingle(i);
-    playRow(state.rows[i]);
+    playAt(i);
   }
   updateRowClasses();
 });
@@ -1183,11 +1315,11 @@ ui.rows.addEventListener('contextmenu', (e) => {
   if (!row) return;
   e.preventDefault();
   const i = +row.dataset.i;
-  if (!state.selected.has(state.rows[i].id)) {
+  if (!state.selected.has(state.ids[i])) {
     selectSingle(i);
     updateRowClasses();
   }
-  window.sm.sampleMenu(actionRows(i).map((r) => r.id));
+  window.sm.sampleMenu(actionIds(i));
 });
 
 ui.rows.addEventListener('click', (e) => {
@@ -1199,7 +1331,7 @@ ui.rows.addEventListener('click', (e) => {
     pendingCollapse = -1;
     selectSingle(i);
     updateRowClasses();
-    if (!e.target.closest('.c-tags')) playRow(state.rows[i]);
+    if (!e.target.closest('.c-tags')) playAt(i);
   }
   if (e.target.closest('.c-tags') && !e.shiftKey && !e.metaKey && !e.ctrlKey) startEdit(i);
 });
@@ -1211,7 +1343,7 @@ ui.rows.addEventListener('dragstart', (e) => {
   if (!row) return;
   pendingCollapse = -1;
   // Ids, not paths: main swaps in the cropped file for samples with a region.
-  window.sm.startDrag(actionRows(+row.dataset.i).map((r) => r.id));
+  window.sm.startDrag(actionIds(+row.dataset.i));
 });
 
 // --- tag editing ---------------------------------------------------------------------
@@ -1236,9 +1368,12 @@ function buildTagInput(r) {
   return input;
 }
 
-function startEdit(i) {
-  const r = state.rows[i];
-  if (!r) return;
+async function startEdit(i) {
+  const id = state.ids[i];
+  if (id == null) return;
+  await ensureRows([id]);
+  const r = rowCache.get(id);
+  if (!r || state.ids[i] !== id) return;
   if (state.editing) commitEdit();
   state.editing = { id: r.id, value: r.tags.join(', ') };
   state.cursor = i;
@@ -1260,7 +1395,7 @@ async function commitEdit() {
   const edit = state.editing;
   if (!edit) return;
   endEdit();
-  const row = state.rows.find((r) => r.id === edit.id);
+  const row = rowCache.get(edit.id);
   const before = row ? [...row.tags] : null;
   const tags = edit.value.split(',').map((s) => s.trim()).filter(Boolean);
   const saved = await saveTags(edit.id, tags);
@@ -1274,7 +1409,7 @@ async function commitEdit() {
 async function saveTags(id, tags) {
   try {
     const saved = await window.sm.updateTags(id, tags);
-    const row = state.rows.find((r) => r.id === id);
+    const row = rowCache.get(id);
     if (row) {
       row.tags = saved;
       patchRow(row);
@@ -1305,7 +1440,7 @@ async function undoTags(redo) {
   const saved = await saveTags(step.id, redo ? step.after : step.before);
   if (!saved) return;
   (redo ? tagUndo : tagRedo).push(step);
-  const i = state.rows.findIndex((r) => r.id === step.id);
+  const i = state.ids.indexOf(step.id);
   if (i >= 0) {
     selectSingle(i);
     ensureVisible(i);
@@ -1375,9 +1510,11 @@ function schedulePrefetch(row) {
   cancelPrefetch();
   const gen = prefetch.gen;
   prefetch.timer = setTimeout(async () => {
-    const i = state.rows[state.cursor] === row ? state.cursor : state.rows.indexOf(row);
+    const i = state.ids[state.cursor] === row.id ? state.cursor : state.ids.indexOf(row.id);
     if (i < 0) return;
-    for (const next of [state.rows[i + 1], state.rows[i - 1]]) {
+    const near = [state.ids[i + 1], state.ids[i - 1]].filter((id) => id != null);
+    await ensureRows(near); // their sizes
+    for (const next of near.map((id) => rowCache.get(id))) {
       if (gen !== prefetch.gen) return;
       if (!next || player.cache.has(next.id) || !(next.size <= PREFETCH_MAX_BYTES)) continue;
       await loadBuffer(next.id, () => gen !== prefetch.gen).catch(() => null);
@@ -1451,7 +1588,26 @@ function startAt(offset) {
   tick();
 }
 
+// Play the row at i, fetching its details first if they aren't here yet
+// (paging far, Random). Nothing if something else was played meanwhile.
+// Resolves to the row, once it plays.
+let playWanted = 0;
+async function playAt(i, from = 0) {
+  const want = ++playWanted;
+  const id = state.ids[i];
+  if (id == null) return null;
+  if (!rowCache.has(id)) {
+    await ensureRows([id]);
+    if (want !== playWanted) return null;
+  }
+  const row = rowCache.get(id);
+  if (!row) return null;
+  await playRow(row, from);
+  return row;
+}
+
 async function playRow(row, from = 0) {
+  playWanted++;
   const req = ++player.req;
   stopSource();
   player.playing = false;
@@ -1486,6 +1642,8 @@ async function playRow(row, from = 0) {
 
   if (row.durationMs == null) {
     row.durationMs = Math.round(buf.duration * 1000);
+    const cached = rowCache.get(row.id);
+    if (cached) cached.durationMs = row.durationMs; // a newer copy of the row, if it was fetched again
     patchRow(row);
     window.sm.setDuration(row.id, row.durationMs);
   }
@@ -1500,8 +1658,8 @@ function pause() {
 }
 
 function togglePlay() {
-  const cur = state.rows[state.cursor];
-  if (cur && (!player.row || player.row.id !== cur.id)) return playRow(cur);
+  const cur = state.ids[state.cursor];
+  if (cur != null && (!player.row || player.row.id !== cur)) return playAt(state.cursor);
   if (!player.row) return;
   if (player.playing) return pause();
   if (!player.buf) return playRow(player.row);
@@ -2096,9 +2254,9 @@ async function saveAudio(l, r, name) {
 // Select a sample by id; if the current view hides it, switch to its folder
 // (clearing search/tags) as one Back step.
 async function revealSample(id, filePath) {
-  let i = state.rows.findIndex((r) => r.id === id);
+  let i = state.ids.indexOf(id);
   if (i < 0) await refreshList(); // it may simply be new since the last refresh
-  i = state.rows.findIndex((r) => r.id === id);
+  i = state.ids.indexOf(id);
   if (i < 0) {
     recordNav('reveal');
     if (state.editing) cancelEdit();
@@ -2107,13 +2265,13 @@ async function revealSample(id, filePath) {
     state.filter = { search: '', queries: [], tags: new Set(), untagged: false, dirs: new Set([filePath.slice(0, filePath.lastIndexOf('/'))]) };
     renderRail();
     await refreshList({ reset: true });
-    i = state.rows.findIndex((r) => r.id === id);
+    i = state.ids.indexOf(id);
     if (i < 0) {
       // e.g. its folder isn't in the tree — fall back to the whole library
       state.filter.dirs.clear();
       renderRail();
       await refreshList({ reset: true });
-      i = state.rows.findIndex((r) => r.id === id);
+      i = state.ids.indexOf(id);
     }
   }
   if (i < 0) return;
@@ -2186,13 +2344,14 @@ function flash(msg) {
 // --- random -------------------------------------------------------------------------
 
 // Random pick from what's listed: whatever the current search / tags /
-// folders match, or — with no filters — the whole (non-hidden) library.
+// folders match, or — with no filters — the whole (non-hidden) library. Any
+// of them equally, loaded on screen yet or not (the list holds every id).
 // A Back step, so ⌘[ returns to the previous sample.
 // R: a random sample from what the filters show. ⇧R: that, plus a crop
 // region at a random spot in it, looping — as long as the last crop you
 // made (1s before any).
 async function randomSample(withRegion = false) {
-  const n = state.rows.length;
+  const n = state.ids.length;
   if (!n) return;
   recordNav('random');
   let i = Math.floor(Math.random() * n);
@@ -2201,8 +2360,8 @@ async function randomSample(withRegion = false) {
   ensureVisible(i);
   renderList();
   updateRowClasses();
-  const row = state.rows[i];
-  await playRow(row);
+  const row = await playAt(i);
+  if (!row) return;
   if (!withRegion || player.row !== row || !player.buf) return;
   const dur = player.buf.duration;
   if (dur < 0.25) return; // a one-shot hit: a slice of it would just buzz
@@ -2226,8 +2385,8 @@ window.addEventListener('keydown', (e) => {
   }
   if (mod && e.altKey && (e.code === 'KeyR' || e.key.toLowerCase() === 'r')) {
     e.preventDefault();
-    const cur = state.rows[state.cursor];
-    if (cur) window.sm.reveal(cur.id);
+    const cur = state.ids[state.cursor];
+    if (cur != null) window.sm.reveal(cur);
     return;
   }
 
@@ -2262,7 +2421,7 @@ window.addEventListener('keydown', (e) => {
         commitSearchText(text); // keep focus: type the next one
       } else {
         ui.search.blur();
-        if (state.cursor < 0 && state.rows.length) move(1, false);
+        if (state.cursor < 0 && state.ids.length) move(1, false);
       }
     } else if (e.key === 'Backspace' && !ui.search.value) {
       removeLastChip();
@@ -2503,7 +2662,7 @@ window.addEventListener('mouseup', (e) => {
   }
 });
 window.sm.onEditTags((id) => {
-  const i = state.rows.findIndex((r) => r.id === id);
+  const i = state.ids.indexOf(id);
   if (i >= 0) startEdit(i);
 });
 // Volume slider 0–100 in decibels: the middle (50) is 0 dB — samples play
@@ -2537,6 +2696,7 @@ for (const b of document.querySelectorAll('button')) b.addEventListener('mousedo
 // One at a time, in order (each builds on the last).
 let libChanges = Promise.resolve();
 window.sm.onLibraryChanged((c) => {
+  dropRows(c); // right away: a row fetched from here on is current
   libChanges = libChanges.then(() => applyLibraryChange(c)).catch((err) => console.error(err));
 });
 // A hand edit changes tag counts only, not folders.
