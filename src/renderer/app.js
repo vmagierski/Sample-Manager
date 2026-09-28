@@ -520,9 +520,34 @@ function removeLastChip() {
 
 const suggest = { kind: null, items: [], sel: 0 };
 
+// termScore, plus abbreviations that start a word: "ks" → "Kicks" (90) or
+// "dk" → "Drum Kits" (60) beat letters found mid-word ("ks" in "Sticks", 70)
+// or scattered. Short typed abbreviations are what the / picker gets most.
+function pickScore(term, text) {
+  const base = termScore(term, text);
+  if (base != null && base >= 90) return base;
+  const t = text.toLowerCase();
+  let best = base;
+  for (let at = t.indexOf(term[0]); at >= 0; at = t.indexOf(term[0], at + 1)) {
+    if (at > 0 && /[a-z0-9]/.test(t[at - 1])) continue; // not a word start
+    let j = 1;
+    let i = at + 1;
+    let words = 1;
+    for (; i < t.length && j < term.length; i++) {
+      if (!/[a-z0-9]/.test(t[i]) && /[a-z0-9]/.test(t[i + 1] || '')) words++;
+      if (t[i] === term[j]) j++;
+    }
+    if (j < term.length) continue;
+    const sc = (words === 1 ? 90 : 60) - t.length * 0.05;
+    if (best == null || sc > best) best = sc;
+  }
+  return best;
+}
+
 // Every visible folder in the tree whose name — with its parents' names —
 // matches all the terms (same rules as the sidebar filter), best first.
-// No terms: the libraries themselves.
+// Ranked for "parent … folder" typing: "dr ks" puts Drums › Kicks above a
+// folder that happens to hold both ("Drum Sticks"). No terms: the libraries.
 function folderMatches(query) {
   const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
   const out = [];
@@ -534,22 +559,33 @@ function folderMatches(query) {
     } else {
       let score = 0;
       let own = 0;
+      let lastOwn = false;
       const hits = new Set();
       let ok = true;
-      for (const term of terms) {
-        const mine = termScore(term, node.name);
-        const up = trail.reduce((b, n) => Math.max(b, termScore(term, n) ?? -1), -1);
+      terms.forEach((term, k) => {
+        if (!ok) return;
+        const mine = pickScore(term, node.name);
+        const up = trail.reduce((b, n) => Math.max(b, pickScore(term, n) ?? -1), -1);
         if (mine == null && up < 0) {
           ok = false;
-          break;
+          return;
         }
-        if (mine != null && mine >= up) {
+        // The last word typed usually names the folder itself; earlier ones
+        // may name a parent. Prefer the folder's own match only when it's
+        // at least as good.
+        if (mine != null && (mine >= up || k === terms.length - 1)) {
           own++;
+          if (k === terms.length - 1) lastOwn = true;
           score += mine;
           for (const i of fuzzy(term, node.name) || []) hits.add(i);
-        } else score += up * 0.5; // matched a parent: counts, but less
+        } else score += up;
+      });
+      // Bonus for the tree reading the way it was typed: last word here,
+      // the others above. Several words packed into one name get less.
+      if (ok && own) {
+        if (terms.length > 1 && lastOwn && own === 1) score += 15;
+        out.push({ node, trail, score: score - names.length * 0.3, hits: [...hits] });
       }
-      if (ok && own) out.push({ node, trail, score: score - names.length * 0.3, hits: [...hits] });
     }
     for (const kid of node.kids.values()) visit(kid, names);
   };
