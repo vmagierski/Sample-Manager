@@ -1,68 +1,38 @@
 # Sample Manager
 
-Electron sample browser: watched folders → SQLite, rule-based auto-tagging, keyboard audition, native drag-to-DAW.
+A fast, keyboard-driven sample browser for macOS. Point it at your sample folders and it indexes and tags everything, plays each sample as you arrow through the list, and lets you drag any sample — or just the part you want — straight into Logic or any other DAW.
+
+<!-- demo video: drag "Sample Manager demo.mp4" into this README in GitHub's editor and replace the image below with the URL it gives you -->
+![Sample Manager](docs/media/demo-poster.jpg)
+
+## Features
+
+- **Your whole library in one list.** Add any folders — Apple Loops, Logic's factory content, your own packs and bounces. New, moved and renamed files are picked up automatically.
+- **Instant audition.** Arrow through the list and every sample plays as you land on it, with a waveform you can click, zoom and loop.
+- **Search that ranks well.** Every word must match the name, its folders or its tags; exact names and phrases come first.
+- **Filters as chips.** `/drums` picks a folder, `#bass` a tag, Enter keeps a search — all of them visible as chips you can remove with a click or Backspace.
+- **Automatic tags.** Samples are tagged from their file and folder names (kick, snare, pad, vocal, fx…); edit tags by hand any time.
+- **Drag to your DAW.** Drag one sample or a whole selection straight into Logic.
+- **Crops.** Select part of a waveform and drag just that — no editing, no bouncing. Resize, move and loop it while it plays.
+- **Quick Search, from anywhere.** ⌃⌥Space opens a Spotlight-style panel, even over full-screen Logic: search, audition and drag without leaving your project.
+- **Rec and Last 10s.** Record what you're auditioning, or save the last ten seconds you heard after the fact.
+- **Random.** One key plays a random sample from whatever you've filtered — good for breaking out of habits.
+- **Lives in the menu bar.** Close the window and it keeps watching your folders, with Quick Search one keystroke away.
+
+## Getting started
+
+Sample Manager runs on macOS (Apple Silicon). There's no downloadable build yet — build it from source:
 
 ```sh
-npm install        # also rebuilds better-sqlite3 for Electron
-npm start
-npm test           # unit tests (run under Electron's Node)
-SM_USER_DATA=/tmp/sm-test npm start   # use a throwaway library
+git clone https://github.com/vmagierski/Sample-Manager.git
+cd Sample-Manager
+npm install
+npm run install-app   # builds the app and copies it to /Applications
 ```
 
-## Installing as a Mac app
+Open **Sample Manager**, press **⌘O** to add a sample folder, and start arrowing through the list.
 
-```sh
-npm run install-app   # builds dist/mac-arm64/Sample Manager.app and copies it to /Applications
-```
+## Documentation
 
-Re-run it after changing code. The build is ad-hoc signed (fine for your own machine; sharing it would need a Developer ID + notarization). Dev (`npm start`) and the installed app share one library.
-
-The library DB lives in `~/Library/Application Support/sample-manager/library.db`.
-
-## Quick Search (⌃⌥Space)
-
-A Spotlight-style panel you can call up from anywhere, including over full-screen Logic:
-type to search the whole library (every word must match; file-name matches first). `#tag`
-filters by tag — a prefix like `#ki` is enough, and Space / Tab / ↵ turns it into a chip
-(Backspace in an empty box removes the last one), **↑/↓** to audition, **⇧↵** play/stop, **drag** a result straight
-into Logic, **↵** to open it in the main window, **⌘↵** to show it in Finder, **esc** to close.
-
-Sample Manager is a menu-bar app: with its window closed it lives only in the menu bar
-(waveform icon — no ⌘Tab / Dock entry) so the hotkey and folder watching keep working; while
-the window is open it's a normal app. **⌘Q** closes the window back to the menu bar; **⌥⌘Q** or
-the menu-bar icon → *Quit* quits completely. Launching it (Spotlight, Finder) opens the window;
-*Open at Login* (in the icon's menu) starts it quietly in the menu bar. To change the hotkey, put e.g.
-`{ "quickSearchHotkey": "Control+Alt+Space" }` in
-`~/Library/Application Support/sample-manager/settings.json` and restart.
-
-## Keys
-
-| Key | Action |
-|---|---|
-| ↑ / ↓, PgUp / PgDn, Home / End | Move (auditions when Auto-play is on); add Shift to extend the selection |
-| Space | Play / pause |
-| Enter or T | Edit tags of current row (comma-separated; Enter saves, Esc cancels) |
-| / or ⌘F | Search (↑/↓ still move the list while typing) |
-| Enter (in search) | Keep the search as a chip and start another (`#tag` adds a tag chip, `/folder` a folder chip) |
-| `/` or `#` then ↑↓, Enter / Tab (in search) | Pick a folder / tag from the suggestions |
-| Backspace (empty search) | Remove the last chip |
-| ⌘A | Select all visible |
-| Esc | Clear the crop region (keeps playing); with no region, stop |
-| I / O | Set crop start / end at the playhead |
-| L | Loop on / off |
-| ⌥-scroll on the waveform | Zoom in / out (horizontal scroll pans while zoomed) |
-| ⌘[ / ⌘] (or mouse side buttons, or ‹ › in the header) | Back / forward to previous places — filters, selected sample and scroll position |
-| ⌥⌘R | Show current sample in Finder |
-| ⌘O / ⇧⌘R | Add folder / rescan library (reloads `tag-rules.json`) |
-
-Active filters are always visible: folders (orange), tags (in their colour) and kept searches show as chips in the search box (× removes one; click a folder chip to find it in the sidebar). Type `/` then part of a folder name — parent words first, like `/dr kick` for Drums › Kicks — to pick a folder from a list of matches without leaving the keyboard; `#` does the same for tags. Adding a folder that's already in the library (or inside one) just rescans it and shows it in the sidebar. The Folders / Tags headers show an orange label for the current folder / tag filter even when the section is collapsed (× clears it). Click a folder (or any subfolder via ▸) in the sidebar to show only what is below it; ⇧/⌘-click to select several. Search looks inside the selected folders (the search box says so); the orange label × deselects them; ⋯ → Collapse All closes the tree. The **⋯** next to Folders adds a folder or rescans; click the **Folders** / **Tags** headers to collapse either section. Each launch starts with only top-level folders open and no filters. The **Filter folders… / Filter tags…** boxes narrow the sidebar as you type. Whole-word matches rank first and the tree opens only down to the first matching folder (`snare` → EXS Factory › … › **02 Snares**); scattered-letter matches (`snr`, `vint snr`) are used only when nothing contains the word as typed. For folders each word may match a parent (`dr ks` → Drums › Kicks). Esc clears. Drag the sidebar's right edge to widen it (double-click to reset). Right-click a folder to hide it (struck through; right-click again to unhide).
-
-**Crop:** drag across the player waveform to select part of a sample (drag the edges to resize, drag inside to move it, click outside or double-click to clear). Drag the top edge of the player to make the waveform taller. A **⠿ Drag crop · Save…** handle floats on the region: drag it to drop just the crop into Logic, Finder or the Desktop (the region itself doesn't move), or Save… it as a WAV (defaults to the Desktop). Playback stays inside the crop and **Loop** switches on (it's off by default; on without a crop it loops the whole sample), the row gets a ✂, and dragging the sample into your DAW drags just that part — a WAV in `~/Library/Caches/Sample Manager/Crops`, kept for a week after its last drag and then deleted. Crops aren't added to your library: turn on **File › Project Settings › Assets › Copy audio files into project** in Logic (save it in your template) so saving the project keeps its own copy. Use **Save…** to keep a crop for good. (Crops from earlier versions stay in `~/Music/Sample Manager/Crops`.) WAV/AIFF crops are cut losslessly in the original format; other formats become 24-bit WAV. Crops last for the session.
-
-**R** or ⤮ Random plays a random sample from whatever the current filters show (search, tags, folders) — or from the whole library when nothing is filtered. **● Rec** records what plays; **⟲ Last 10s** saves the last 10 seconds you heard. Both save 24-bit WAVs to `~/Music/Sample Manager/Recordings` by default (created and added to the library on first launch).
-
-Click selects and auditions; ⌘-click / Shift-click multi-select; click a row's tag cell to edit. Drag any row (or the whole selection) into your DAW. Right-click a sample for Show in Finder / Copy Path / Show in Sidebar / Edit Tags, or a sidebar folder for Show in Finder.
-
-## Tagging
-
-`tag-rules.json` is a list of `{tag, pattern}`; patterns are case-insensitive regexes matched against the path below the watched folder, so folder names count. Edit it (File → Edit Tag Rules…) then rescan. In dev that's the repo's file; the installed app uses its own copy at `~/Library/Application Support/sample-manager/tag-rules.json`, seeded from the repo's on first launch. Once you edit a sample's tags by hand, rescans leave that sample's tags alone, so removed auto tags stay removed.
+- [User guide](docs/guide.md) — searching and filters, crops, Quick Search, tags and every keyboard shortcut
+- [Development](docs/development.md) — building, testing and how the code is laid out
