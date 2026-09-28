@@ -19,7 +19,7 @@ npm run bench -- --skip-large --skip-scan --runs 3
 
 `scripts/make-bench-library.js` (also `npm run bench:make`) builds a throwaway library in `$TMPDIR/sm-bench` (or `--dir` / `SM_BENCH_DIR`): a `library.db` with ~750k samples in realistic packs, tagged by `tag-rules.json` (the paths exist only in the database); a real `tree/` of ~30k small WAVs for scan timing; and `large/` with a 30-minute WAV, the same audio as AIFF and ALAC CAF, and a 10-minute AAC CAF. Each part is only built if missing; `--force` rebuilds, and `--samples`, `--tree-files` and `--large-min` change the sizes.
 
-`scripts/bench.js` times main-list queries and searches (SQL plus the cost of cloning the rows to the renderer), `listDirs` and `listTags` (with and without a hidden folder), a first scan and an unchanged rescan of `tree/` (with the longest the library worker's event loop is blocked), and `readPlayable` / `cropToWav` on each large file, each in its own process for a clean peak memory figure. Each line is compared with a target (50 ms for list queries, 100 ms for an unchanged `syncFolder`, 150 ms and 1 GB for the large files). Misses are reported, not failed: it's a measuring tool, not part of `npm test`.
+`scripts/bench.js` times main-list queries and searches as the main window runs them (a view's id list plus the first screen of rows, and the cost of cloning them to the renderer), `listDirs` and `listTags` (with and without a hidden folder), a first scan and an unchanged rescan of `tree/` (with the longest the library worker's event loop is blocked), and `readPlayable` / `cropToWav` on each large file, each in its own process for a clean peak memory figure. Each line is compared with a target (50 ms for list queries, 100 ms for an unchanged `syncFolder`, 150 ms and 1 GB for the large files). Misses are reported, not failed: it's a measuring tool, not part of `npm test`.
 
 ## Installing as a Mac app
 
@@ -49,7 +49,7 @@ Quit the app first (⌥⌘Q — ⌘Q only closes the window to the menu bar). Re
 | `src/main/library-worker.js` | The library worker's entry: wires the parent port and the pages' ports to `library-service.js` |
 | `src/main/library-service.js` | What the worker does: scanning, watching, folders, tags, sample reads and crops |
 | `src/main/lookup.js` | Main's read-only view of the database, for drags and context menus |
-| `src/main/db.js` | SQLite schema and queries (search, ranking, tags, hidden folders) |
+| `src/main/db.js` | SQLite schema, migrations and queries: the trigram search index, stored tag/folder counts, id-list views and ranking, tags, hidden folders |
 | `src/main/scanner.js` | Folder walk and rule-based tagging |
 | `src/main/watcher.js` | chokidar watching, with rename detection |
 | `src/main/drag.js` | Native drag-out (`webContents.startDrag`) |
