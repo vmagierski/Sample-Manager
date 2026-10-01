@@ -3,6 +3,7 @@ const path = require('path');
 const { app } = require('electron');
 const lookup = require('./lookup');
 const library = require('./library');
+const { cropFileName } = require('./kits');
 
 // Crops dragged into a DAW land here, outside the library: they're not
 // kept. Logic copies a dropped file into the project when it's saved (File ›
@@ -41,9 +42,12 @@ function clearAll() {
 
 const has = (id) => pending.has(id);
 
-function cropName(source, start, end) {
-  const base = path.basename(source, path.extname(source));
-  return `${base} [${start.toFixed(2)}-${end.toFixed(2)}s].wav`;
+const cropName = cropFileName;
+
+// The region set for a sample, or null.
+function region(id) {
+  const p = pending.get(id);
+  return p ? { start: p.start, end: p.end } : null;
 }
 
 // Final file for a drag. The same region of the same sample always maps to the
@@ -96,4 +100,4 @@ function suggestedName(id) {
   return p ? cropName(p.source, p.start, p.end) : null;
 }
 
-module.exports = { prepare, clear, clearAll, has, materialize, saveTo, suggestedName, prune, CROP_DIR, KEEP_DAYS };
+module.exports = { prepare, clear, clearAll, has, region, materialize, saveTo, suggestedName, prune, CROP_DIR, KEEP_DAYS };

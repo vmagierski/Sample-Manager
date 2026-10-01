@@ -7,6 +7,7 @@ const { LibraryWatcher } = require('./watcher');
 const { readPlayable, cropToWav } = require('./audio');
 const convcache = require('./convcache');
 const { latestWins } = require('./latest');
+const kits = require('./kits');
 
 // Everything the library worker does: the database (its only writer),
 // scanning, watching, and reading/converting audio. No Electron here — the
@@ -20,6 +21,9 @@ const { latestWins } = require('./latest');
 //   closed(owner): a window's connection went away
 // Rows per getRows call: a screenful and then some, not the library.
 const ROWS_MAX = 2000;
+
+// Files copied into a kit at once.
+const KIT_COPIES = 6;
 
 function createLibrary({ broadcast, toMain }) {
   let config = null;
@@ -121,13 +125,38 @@ function createLibrary({ broadcast, toMain }) {
     }
   }
 
+  // The library folder that holds `p` (a real path), if any.
+  const covering = (p) => db.listFolders().find((f) => p === f.path || p.startsWith(f.path + path.sep));
+
+  // Make sure `dir` is inside a watched library folder, adding it if you
+  // removed the folder that held it, so kits never end up invisible.
+  async function ensureWatched(dir) {
+    if (covering(dir)) return;
+    const folder = db.addFolder(dir, 'Kits');
+    watcher.watch(folder);
+    notifyChanged();
+  }
+
+  async function listKits() {
+    let entries;
+    try {
+      entries = await fs.promises.readdir(config.kitsDir, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+    return entries
+      .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+      .map((e) => e.name)
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+  }
+
   // --- requests from main -----------------------------------------------------
 
   const readLatest = latestWins();
   let cropSeq = 0;
 
   const main = {
-    // config: { dbFile, rulesPath, cacheDir, cacheCap, appMusicDir, recordDir, appMusicMarker }
+    // config: { dbFile, rulesPath, cacheDir, cacheCap, appMusicDir, recordDir, appMusicMarker, kitsDir }
     init(cfg) {
       config = cfg;
       db.open(cfg.dbFile);
@@ -232,6 +261,116 @@ function createLibrary({ broadcast, toMain }) {
       return db.getByPath(real).id;
     },
 
+    // Copy samples into the kit folder `kit` under config.kitsDir (made when
+    // `create`; otherwise it must exist), then index the copies right away so
+    // the page can show them. items: [{ id, start?, end? }] — with a region the
+    // copy is that part as a WAV. A sample that can't be copied is reported,
+    // not fatal: { kit, dir, copied, failed: [{ name, error }], ids }.
+    async copyToKit({ kit, create = false, items }) {
+      const name = kits.safeName(kit);
+      if (!name || name !== String(kit).trim()) throw new Error('That isn’t a usable kit name');
+      await fs.promises.mkdir(config.kitsDir, { recursive: true });
+      const root = await fs.promises.realpath(config.kitsDir);
+      const dir = path.join(root, name);
+      if (create) {
+        try {
+          await fs.promises.mkdir(dir);
+        } catch (err) {
+          if (err.code === 'EEXIST') throw new Error(`A kit named “${name}” already exists`);
+          throw err;
+        }
+      } else if (!(await fs.promises.stat(dir).catch(() => null))?.isDirectory()) {
+        throw new Error(`There is no kit named “${name}”`);
+      }
+      await ensureWatched(root);
+
+      // Destination names are settled up front, in selection order, so the
+      // result doesn't depend on which copy finishes first.
+      const taken = new Set((await fs.promises.readdir(dir)).map((n) => n.toLowerCase()));
+      const jobs = [];
+      const failed = [];
+      for (const item of items || []) {
+        const row = db.getById(item.id);
+        if (!row) {
+          failed.push({ name: `#${item.id}`, error: 'not in the library' });
+          continue;
+        }
+        const crop = item.end > item.start ? [item.start, item.end] : null;
+        const file = kits.uniqueName(kits.safeName(crop ? kits.cropFileName(row.path, ...crop) : row.filename) || 'Sound', taken);
+        jobs.push({ row, crop, dest: path.join(dir, file) });
+      }
+
+      const copyOne = async (job) => {
+        try {
+          if (job.crop) {
+            try {
+              await fs.promises.writeFile(job.dest, await cropToWav(job.row.path, ...job.crop), { flag: 'wx' });
+            } catch (err) {
+              if (err.code === 'EEXIST') throw err;
+              // Not croppable (or unreadable as audio): the whole sample, like a drag.
+              await fs.promises.rm(job.dest, { force: true });
+              job.dest = path.join(path.dirname(job.dest), kits.uniqueName(kits.safeName(job.row.filename), taken));
+              job.crop = null;
+              await fs.promises.copyFile(job.row.path, job.dest, fs.constants.COPYFILE_EXCL | fs.constants.COPYFILE_FICLONE);
+            }
+          } else {
+            await fs.promises.copyFile(job.row.path, job.dest, fs.constants.COPYFILE_EXCL | fs.constants.COPYFILE_FICLONE);
+          }
+          job.done = true;
+        } catch (err) {
+          await fs.promises.rm(job.dest, { force: true }).catch(() => {});
+          failed.push({ name: job.row.filename, error: err.code === 'ENOENT' ? 'file is missing' : err.message });
+        }
+      };
+      let next = 0;
+      await Promise.all(
+        Array.from({ length: Math.min(KIT_COPIES, jobs.length) }, async () => {
+          while (next < jobs.length) await copyOne(jobs[next++]);
+        })
+      );
+
+      // Index the copies now (the watcher would, ~1s later), carrying over tags
+      // that were edited by hand — the rest derive from the new path as usual.
+      const ids = [];
+      const folder = covering(root);
+      const copies = jobs.filter((j) => j.done);
+      for (let i = 0; i < copies.length; i += 50) {
+        db.batch(() => {
+          for (const job of copies.slice(i, i + 50)) {
+            const st = fs.statSync(job.dest);
+            const id = db.upsertFile(folder.id, { path: job.dest, size: st.size, mtime: Math.round(st.mtimeMs) },
+              scanner.tagsFor(path.relative(folder.path, job.dest), job.dest));
+            if (job.row.tags_edited) db.setTags(id, db.getRows([job.row.id])[0]?.tags || []);
+            ids.push(id);
+          }
+        });
+        await new Promise(setImmediate);
+      }
+      notifyChanged();
+      return { kit: name, dir, copied: copies.length, failed, ids };
+    },
+
+    // Kit names, alphabetical.
+    listKits: () => listKits(),
+
+    // Rename a kit's folder. The watcher sees the files move (keeping their
+    // tags); nothing is rescanned here.
+    async renameKit(from, to) {
+      const name = kits.safeName(to);
+      if (!name || name !== String(to).trim()) throw new Error('That isn’t a usable kit name');
+      if (kits.safeName(from) !== from) throw new Error('Not a kit');
+      const root = await fs.promises.realpath(config.kitsDir);
+      const src = path.join(root, from);
+      const dest = path.join(root, name);
+      if (name === from) return { kit: name, dir: dest };
+      // A case-only change is the same folder on a case-insensitive volume.
+      if (name.toLowerCase() !== from.toLowerCase() && (await fs.promises.stat(dest).catch(() => null))) {
+        throw new Error(`A kit named “${name}” already exists`);
+      }
+      await fs.promises.rename(src, dest);
+      return { kit: name, dir: dest };
+    },
+
     // Cut [start, end) seconds of a sample into a temp WAV; its path.
     async renderCrop(filePath, start, end) {
       const buf = await cropToWav(filePath, start, end);
@@ -268,6 +407,12 @@ function createLibrary({ broadcast, toMain }) {
     listDirs: whenReady(() => db.listDirs()),
     listFolders: whenReady(() => db.listFolders()),
     listHidden: whenReady(() => db.listHidden()),
+    listKits: whenReady(() => listKits()),
+    // A name for a new kit made from these samples (see kits.defaultKitName).
+    suggestKitName: whenReady(async (ids) => {
+      const rows = db.getRows([].concat(ids || []).slice(0, ROWS_MAX));
+      return kits.defaultKitName(rows, await listKits());
+    }),
     updateTags: whenReady((id, tags) => {
       const out = db.setTags(id, Array.isArray(tags) ? tags : []);
       broadcast('tags:changed');
