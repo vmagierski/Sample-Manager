@@ -6,6 +6,7 @@ const crop = require('./crop');
 const quick = require('./quick');
 const library = require('./library');
 const lookup = require('./lookup');
+const kits = require('./kits');
 
 // Same library for `npm start` and the installed .app (whose productName would
 // otherwise give it a different userData folder). Override for a throwaway
@@ -31,6 +32,17 @@ const CONVERTED_CAP = 2 * 1024 ** 3;
 // tag-rules.json) automatically.
 const APP_MUSIC_DIR = path.join(app.getPath('home'), 'Music', 'Sample Manager');
 const RECORD_DIR = path.join(APP_MUSIC_DIR, 'Recordings');
+
+// Kits are folders of copies inside it: Kits/<name>/ (SM_KITS_DIR for tests).
+const KITS_DIR = process.env.SM_KITS_DIR || path.join(APP_MUSIC_DIR, 'Kits');
+// Library paths are real paths, so compare against the folder's too.
+const realKitsDir = () => {
+  try {
+    return fs.realpathSync(KITS_DIR);
+  } catch {
+    return KITS_DIR;
+  }
+};
 
 const DB_FILE = path.join(app.getPath('userData'), 'library.db');
 
@@ -129,11 +141,14 @@ function registerIpc() {
     const row = lookup.getById(id);
     if (row) shell.showItemInFolder(row.path);
   });
+  ipcMain.handle('kit:dir', () => realKitsDir());
+  ipcMain.handle('kit:add', (e, ids, kit, create) => addToKit(e.sender, ids, kit, create));
+  ipcMain.handle('kit:rename', (_e, from, to) => library.call('renameKit', from, to));
   ipcMain.on('sample:contextMenu', (e, ids) => sampleMenu(e.sender, ids));
   ipcMain.on('dir:contextMenu', (e, dir) => dirMenu(e.sender, dir));
   ipcMain.on('tag:contextMenu', (e, name) => tagMenu(e.sender, name));
   ipcMain.on('rail:foldersMenu', (e, at, state) => foldersMenu(e.sender, at, state));
-  drag.register();
+  drag.register({ kitsDir: realKitsDir });
 }
 
 // --- recordings -----------------------------------------------------------------
@@ -154,12 +169,65 @@ async function saveRecording(bytes, name) {
   return { path: res.filePath, id };
 }
 
+// --- kits -----------------------------------------------------------------------
+
+// Copy samples into a kit (the library worker does the copying and indexing)
+// and tell the page how it went. Samples with a crop region copy as that
+// region. Resolves with the worker's result, or { error }.
+async function addToKit(sender, ids, kit, create) {
+  const items = [].concat(ids || []).map((id) => ({ id, ...crop.region(id) }));
+  try {
+    const res = await library.call('copyToKit', { kit, create: !!create, items });
+    if (!sender.isDestroyed()) sender.send('ui:kitDone', { ...res, created: !!create });
+    if (res.failed.length) {
+      const shown = res.failed.slice(0, 8).map((f) => `${f.name}: ${f.error}`);
+      if (res.failed.length > shown.length) shown.push(`…and ${res.failed.length - shown.length} more`);
+      dialog.showMessageBox(win, {
+        type: 'warning',
+        message: `${res.copied ? 'Some sounds' : 'No sounds'} could not be copied to “${res.kit}”`,
+        detail: shown.join('\n'),
+      });
+    }
+    return res;
+  } catch (err) {
+    dialog.showErrorBox('Kit', err.message);
+    return { error: err.message };
+  }
+}
+
+// Kits can be created from a page's dialog (it asks for the name); the menu
+// items just tell the page which samples to use.
+async function kitSubmenu(sender, ids) {
+  const names = await library.call('listKits').catch(() => []);
+  return names.map((name) => ({ label: name, click: () => addToKit(sender, ids, name, false) }));
+}
+
+// Move files to the Trash (reversible), then tell the page.
+async function trashFiles(sender, files, what) {
+  let n = 0;
+  for (const f of files) {
+    try {
+      await shell.trashItem(f);
+      n++;
+    } catch (err) {
+      console.error(`trash ${f} failed:`, err.message);
+    }
+  }
+  if (!sender.isDestroyed()) {
+    sender.send('ui:flash', n === files.length ? `Moved ${what(n)} to the Trash` : `Moved ${n} of ${files.length} to the Trash`);
+  }
+}
+
 // --- context menus --------------------------------------------------------------
 
-function sampleMenu(sender, ids) {
+async function sampleMenu(sender, ids) {
   const rows = [].concat(ids || []).map((id) => lookup.getById(id)).filter(Boolean);
   if (!rows.length) return;
   const many = rows.length > 1;
+  const kitIds = rows.map((r) => r.id);
+  const existing = await kitSubmenu(sender, kitIds);
+  const root = realKitsDir();
+  const inKits = rows.every((r) => kits.kitOf(root, r.path));
   Menu.buildFromTemplate([
     // Finder can only be asked to reveal one item; with a multi-selection, the first.
     { label: 'Show in Finder', accelerator: 'Alt+CmdOrCtrl+R', click: () => shell.showItemInFolder(rows[0].path) },
@@ -170,6 +238,19 @@ function sampleMenu(sender, ids) {
     { label: 'Show in Sidebar', click: () => sender.send('ui:showInSidebar', rows[0].path) },
     { type: 'separator' },
     { label: 'Edit Tags…', enabled: !many, click: () => sender.send('ui:editTags', rows[0].id) },
+    { type: 'separator' },
+    { label: 'New Kit from Selection…', accelerator: 'CmdOrCtrl+K', click: () => sender.send('ui:newKit', kitIds) },
+    { label: 'Add to Kit', enabled: existing.length > 0, submenu: existing },
+    // Only files inside a kit folder: the library's own samples stay put.
+    ...(inKits
+      ? [
+          { type: 'separator' },
+          {
+            label: many ? `Remove ${rows.length} from Kit` : 'Remove from Kit',
+            click: () => trashFiles(sender, rows.map((r) => r.path), (n) => `${n} ${n === 1 ? 'sound' : 'sounds'}`),
+          },
+        ]
+      : []),
   ]).popup({ window: BrowserWindow.fromWebContents(sender) });
 }
 
@@ -226,9 +307,17 @@ function dirMenu(sender, dir) {
   const isHidden = hidden.includes(dir);
   const parentHidden = hidden.some((h) => dir.startsWith(h + path.sep));
   const changed = (method) => () => library.call(method, dir).catch((err) => console.error(`${method} failed:`, err));
+  const kit = kits.isKitDir(realKitsDir(), dir) ? path.basename(dir) : null;
   const template = [
     { label: 'Show in Finder', enabled: fs.existsSync(dir), click: () => shell.openPath(dir) },
     { label: 'Copy Path', click: () => clipboard.writeText(dir) },
+    ...(kit
+      ? [
+          { type: 'separator' },
+          { label: 'Rename Kit…', click: () => sender.send('ui:renameKit', kit) },
+          { label: 'Delete Kit…', click: () => deleteKit(sender, dir) },
+        ]
+      : []),
     { type: 'separator' },
     isHidden
       ? { label: 'Unhide', click: changed('unhideDir') }
@@ -238,6 +327,24 @@ function dirMenu(sender, dir) {
   ];
   if (root) template.push({ label: 'Remove from Library…', click: () => removeFolder(root.id) });
   Menu.buildFromTemplate(template).popup({ window: BrowserWindow.fromWebContents(sender) });
+}
+
+async function deleteKit(sender, dir) {
+  const { response } = await dialog.showMessageBox(win, {
+    type: 'warning',
+    buttons: ['Move to Trash', 'Cancel'],
+    defaultId: 0,
+    cancelId: 1,
+    message: `Delete the kit “${path.basename(dir)}”?`,
+    detail: 'The kit folder and the copies in it move to the Trash. The original samples are not touched.',
+  });
+  if (response !== 0) return;
+  try {
+    await shell.trashItem(dir);
+    if (!sender.isDestroyed()) sender.send('ui:flash', `Deleted kit “${path.basename(dir)}”`);
+  } catch (err) {
+    dialog.showErrorBox('Delete Kit', err.message);
+  }
 }
 
 // --- window & menu ------------------------------------------------------------
@@ -273,6 +380,9 @@ function buildMenu() {
           click: () => quick.show(),
         },
         { label: 'Rescan Library', accelerator: 'CmdOrCtrl+Shift+R', click: () => rescanAll() },
+        { type: 'separator' },
+        // The page knows the selection; with none it says so.
+        { label: 'New Kit from Selection…', accelerator: 'CmdOrCtrl+K', click: () => send('ui:newKit') },
         { type: 'separator' },
         { label: 'Edit Tag Rules…', click: () => shell.openPath(RULES_PATH) },
         { type: 'separator' },
@@ -394,6 +504,7 @@ app.whenReady().then(() => {
       cacheCap: CONVERTED_CAP,
       appMusicDir: APP_MUSIC_DIR,
       recordDir: RECORD_DIR,
+      kitsDir: KITS_DIR,
       appMusicMarker: path.join(app.getPath('userData'), '.added-app-music-dir'),
     })
     .catch((err) => console.error('library worker failed to start:', err));

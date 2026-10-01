@@ -908,6 +908,15 @@ function renderFolders() {
       }
     }
     li.title = hidden ? `${node.path}\nHidden — right-click to unhide` : node.path;
+    // A kit drags out as its folder.
+    if (isKit(node.path)) {
+      li.classList.add('kit');
+      li.draggable = true;
+      li.addEventListener('dragstart', (e) => {
+        e.preventDefault();
+        window.sm.startKitDrag(node.path);
+      });
+    }
     const tw = el('span', 'tw', expandable ? (open ? '▾' : '▸') : '');
     li.append(tw, nameWithHits(node.name, hitsFor.get(node.path)), el('span', 'n', (hidden ? node.total : node.n).toLocaleString()));
     if (node.folder) {
@@ -2501,6 +2510,144 @@ window.addEventListener('keydown', (e) => {
       selectAll();
       break;
   }
+});
+
+// --- kits ---------------------------------------------------------------------------------
+// A kit is a folder of copies under ~/Music/Sample Manager/Kits. Main and the
+// library worker do the copying; the page names kits and shows the result.
+
+let kitsDir = '';
+window.sm.kitsDir().then((dir) => {
+  kitsDir = dir;
+  renderFolders();
+});
+const isKit = (p) => !!kitsDir && p.startsWith(kitsDir + '/') && p.indexOf('/', kitsDir.length + 1) < 0;
+const sounds = (n) => `${n.toLocaleString()} ${n === 1 ? 'sound' : 'sounds'}`;
+
+const kitUi = {
+  dialog: $('#kit-dialog'),
+  form: $('#kit-form'),
+  title: $('#kit-title'),
+  name: $('#kit-name'),
+  error: $('#kit-error'),
+  ok: $('#kit-ok'),
+  cancel: $('#kit-cancel'),
+};
+
+// Why `name` can't be a kit's name (null if it can). Same rules as kits.safeName
+// in main, which has the last word.
+function kitNameProblem(name, others) {
+  if (!name) return 'Give the kit a name';
+  if (/[/\\:*?"<>|\u0000-\u001f]/.test(name)) return 'Names can’t contain / \\ : * ? " < > |';
+  if (name.startsWith('.')) return 'Names can’t start with a dot';
+  if (name.length > 100) return 'That name is too long';
+  if (others.has(name.toLowerCase())) return 'A kit with that name already exists';
+  return null;
+}
+
+// The small naming dialog (the renderer has no prompt()). Resolves with the
+// name, or null if cancelled. `others`: names it mustn't match, lower-cased.
+function askKitName({ title, ok, value, others }) {
+  return new Promise((resolve) => {
+    const d = kitUi;
+    const check = () => {
+      const problem = kitNameProblem(d.name.value.trim(), others);
+      d.error.textContent = d.name.value && problem ? problem : '';
+      d.ok.disabled = !!problem;
+    };
+    const close = (result) => {
+      d.dialog.hidden = true;
+      d.form.onsubmit = d.cancel.onclick = d.name.oninput = d.name.onkeydown = d.dialog.onmousedown = null;
+      resolve(result);
+    };
+    d.title.textContent = title;
+    d.ok.textContent = ok;
+    d.name.value = value;
+    d.name.oninput = check;
+    d.name.onkeydown = (e) => {
+      if (e.key === 'Escape') close(null);
+    };
+    d.form.onsubmit = (e) => {
+      e.preventDefault();
+      if (!d.ok.disabled) close(d.name.value.trim());
+    };
+    d.cancel.onclick = () => close(null);
+    d.dialog.onmousedown = (e) => e.target === d.dialog && close(null);
+    check();
+    d.dialog.hidden = false;
+    d.name.focus();
+    d.name.select();
+  });
+}
+
+const kitDialogOpen = () => !kitUi.dialog.hidden;
+
+// Selected sample ids, in list order.
+function selectedIds() {
+  const out = [];
+  for (const id of state.ids) if (state.selected.has(id)) out.push(id);
+  return out;
+}
+
+async function newKit(ids) {
+  if (kitDialogOpen() || state.editing) return;
+  ids = ids && ids.length ? ids : selectedIds();
+  if (!ids.length) return flash('Select some sounds to make a kit from');
+  const [names, suggested] = await Promise.all([window.sm.listKits(), window.sm.suggestKitName(ids)]);
+  const name = await askKitName({
+    title: `New Kit from ${sounds(ids.length)}`,
+    ok: 'Create',
+    value: suggested,
+    others: new Set(names.map((n) => n.toLowerCase())),
+  });
+  if (!name) return;
+  flash(`Copying ${sounds(ids.length)}…`);
+  await window.sm.addToKit(ids, name, true);
+}
+
+async function renameKit(kit) {
+  if (kitDialogOpen()) return;
+  const names = await window.sm.listKits();
+  const name = await askKitName({
+    title: `Rename Kit “${kit}”`,
+    ok: 'Rename',
+    value: kit,
+    others: new Set(names.filter((n) => n !== kit).map((n) => n.toLowerCase())),
+  });
+  if (!name || name === kit) return;
+  const res = await window.sm.renameKit(kit, name);
+  if (res.error) return flash(res.error);
+  // Keep looking at it: the filter follows the folder.
+  const from = `${kitsDir}/${kit}`;
+  if (state.filter.dirs.delete(from)) {
+    state.filter.dirs.add(res.dir);
+    renderRail();
+    refreshList({ reset: true });
+  }
+  flash(`Renamed to Kit “${res.kit}”`);
+}
+
+// Show a kit in the sidebar once the library has it (its files are indexed a
+// moment after the copy); `select` also filters the list to it.
+function showKit(dir, select, tries = 0) {
+  if (state.dirs.some((d) => d.dir === dir)) {
+    if (select) {
+      changeView('dir', () => {
+        state.filter.dirs.clear();
+        state.filter.dirs.add(dir);
+      });
+    }
+    revealInSidebar(`${dir}/x`);
+  } else if (tries < 15) setTimeout(() => showKit(dir, select, tries + 1), 200);
+}
+
+window.sm.onNewKit(newKit);
+window.sm.onRenameKit(renameKit);
+window.sm.onFlash(flash);
+window.sm.onKitDone(({ kit, dir, copied, failed, created }) => {
+  const bad = failed.length ? ` — ${failed.length} failed` : '';
+  flash(copied ? `Copied ${sounds(copied)} to Kit “${kit}”${bad}` : `Nothing copied to Kit “${kit}”${bad}`);
+  if (copied) showKit(dir, created);
 });
 
 // --- wiring ---------------------------------------------------------------------------------

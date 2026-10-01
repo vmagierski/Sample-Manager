@@ -2,6 +2,7 @@ const fs = require('fs');
 const { ipcMain, nativeImage } = require('electron');
 const lookup = require('./lookup');
 const crop = require('./crop');
+const kits = require('./kits');
 
 // macOS crashes the drag if the icon is empty, so we always pass this one.
 // Drawn once at startup (a waveform glyph on a rounded tile) rather than
@@ -38,7 +39,7 @@ function makeDragIcon() {
   return nativeImage.createFromBitmap(buf, { width: S, height: S, scaleFactor: 2 });
 }
 
-function register() {
+function register({ kitsDir }) {
   const icon = makeDragIcon();
   if (icon.isEmpty()) throw new Error('drag icon is empty — startDrag would crash on macOS');
 
@@ -59,6 +60,13 @@ function register() {
     }
     if (!files.length) return;
     event.sender.startDrag({ file: files[0], files, icon });
+  });
+
+  // A kit dragged from the sidebar goes out as its folder, so the DAW gets
+  // the whole kit. Only kit folders, not arbitrary paths from the page.
+  ipcMain.on('kit:startDrag', (event, dir) => {
+    if (typeof dir !== 'string' || !kits.isKitDir(kitsDir(), dir) || !fs.existsSync(dir)) return;
+    event.sender.startDrag({ file: dir, icon });
   });
 }
 

@@ -345,3 +345,14 @@ body.resizing-x, body.resizing-x * { cursor: ew-resize !important; }
 #crop-drag:active { cursor: grabbing; }
 #crop-save { background: #3a2c17; color: var(--accent); border-radius: 0 10px 10px 0; border-left: 1px solid rgba(0, 0, 0, 0.35); }
 #crop-save:hover { background: #4a381d; border-left: 1px solid rgba(0, 0, 0, 0.35); }
+
+/* naming dialog (new / rename kit) */
+.modal { position: fixed; inset: 0; z-index: 50; display: flex; align-items: flex-start; justify-content: center; padding-top: 18vh; background: rgba(0, 0, 0, 0.45); }
+.modal form { width: min(380px, 90vw); padding: 16px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5); }
+.modal h2 { margin: 0 0 10px; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.modal input[type="text"] { width: 100%; font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; outline: none; user-select: text; -webkit-user-select: text; }
+.modal input[type="text"]:focus { border-color: var(--accent); }
+.modal #kit-error { min-height: 16px; margin-top: 6px; color: #ff8a80; font-size: 11px; }
+.modal .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.modal button.primary { background: var(--accent); border-color: var(--accent); color: #1a1205; font-weight: 600; }
+.modal button.primary:disabled { opacity: 0.35; }
