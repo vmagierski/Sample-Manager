@@ -13,6 +13,7 @@ A fast, keyboard-driven sample browser for macOS. Point it at your sample folder
 - **Automatic tags.** Samples are tagged from their file and folder names (kick, snare, pad, vocal, fx…); edit tags by hand any time.
 - **Drag to your DAW.** Drag one sample or a whole selection straight into Logic.
 - **Crops.** Select part of a waveform and drag just that — no editing, no bouncing. Resize, move and loop it while it plays.
+- **Kits.** Select sounds and save them together as a kit: a real folder of copies (crops included) that you can drag into Logic whole.
 - **Quick Search, from anywhere.** ⌃⌥Space opens a Spotlight-style panel, even over full-screen Logic: search, audition and drag without leaving your project.
 - **Rec and Last 10s.** Record what you're auditioning, or save the last ten seconds you heard after the fact.
 - **Random.** One key plays a random sample from whatever you've filtered — good for breaking out of habits. ⇧R also loops a random slice of it.

@@ -53,6 +53,7 @@ Quit the app first (⌥⌘Q — ⌘Q only closes the window to the menu bar). Re
 | `src/main/scanner.js` | Folder walk and rule-based tagging |
 | `src/main/watcher.js` | chokidar watching, with rename detection |
 | `src/main/drag.js` | Native drag-out (`webContents.startDrag`) |
+| `src/main/kits.js` | Kit names, collision handling and defaults (pure); the copying itself is in `library-service.js` |
 | `src/main/crop.js` | Rendering, dragging and pruning crops |
 | `src/main/audio.js` | AIFF/CAF decoding, WAV slicing |
 | `src/main/convcache.js` | On-disk cache of CAF conversions |
@@ -69,5 +70,6 @@ Environment variables for a test copy:
 - `SM_USER_DATA` — a separate library / settings folder. A test copy with this set doesn't register the global hotkey, so it can't take ⌃⌥Space from the installed app.
 - `SM_CROP_DIR` — where dragged crops go.
 - `SM_CACHE_DIR` — where converted CAFs are cached.
+- `SM_KITS_DIR` — where kits are made (default `~/Music/Sample Manager/Kits`). If it isn't inside a library folder, creating a kit adds it to the library as "Kits".
 - `SM_NO_HOTKEY` — skip the hotkey; `SM_HOTKEY` — register it even with `SM_USER_DATA`.
 - `SM_START_HIDDEN` — start in the menu bar only, as a login launch does.

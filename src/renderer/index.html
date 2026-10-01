@@ -101,6 +101,18 @@
     </div>
   </footer>
 
+  <div id="kit-dialog" class="modal" hidden>
+    <form id="kit-form" autocomplete="off">
+      <h2 id="kit-title"></h2>
+      <input id="kit-name" type="text" spellcheck="false" aria-label="Kit name">
+      <div id="kit-error"></div>
+      <div class="buttons">
+        <button type="button" id="kit-cancel">Cancel</button>
+        <button type="submit" id="kit-ok" class="primary"></button>
+      </div>
+    </form>
+  </div>
+
   <script src="../shared/rpc.js"></script>
   <script src="library.js"></script>
   <script src="buffer-cache.js"></script>

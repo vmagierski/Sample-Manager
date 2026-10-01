@@ -37,6 +37,8 @@
     listDirs: call('listDirs'),
     listFolders: call('listFolders'),
     listHidden: call('listHidden'),
+    listKits: call('listKits'),
+    suggestKitName: call('suggestKitName'),
     updateTags: call('updateTags'),
     setDuration: call('setDuration'),
     // Resolves null if a newer readSample from this page superseded it.

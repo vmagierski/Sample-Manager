@@ -44,6 +44,15 @@ contextBridge.exposeInMainWorld('smMain', {
   sampleMenu: (ids) => ipcRenderer.send('sample:contextMenu', ids),
   dirMenu: (dir) => ipcRenderer.send('dir:contextMenu', dir),
   tagMenu: (name) => ipcRenderer.send('tag:contextMenu', name),
+  kitsDir: () => ipcRenderer.invoke('kit:dir'),
+  // Copies the samples (ids) into a kit; creates it when `create`.
+  addToKit: (ids, kit, create) => ipcRenderer.invoke('kit:add', ids, kit, create),
+  renameKit: (from, to) => ipcRenderer.invoke('kit:rename', from, to),
+  startKitDrag: (dir) => ipcRenderer.send('kit:startDrag', dir),
+  onNewKit: (cb) => subscribe('ui:newKit', cb),
+  onRenameKit: (cb) => subscribe('ui:renameKit', cb),
+  onKitDone: (cb) => subscribe('ui:kitDone', cb),
+  onFlash: (cb) => subscribe('ui:flash', cb),
   onEditTags: (cb) => subscribe('ui:editTags', cb),
   onReveal: (cb) => subscribe('ui:reveal', cb),
   // Quick Search panel

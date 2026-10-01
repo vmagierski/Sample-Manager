@@ -5,6 +5,7 @@
 - [Searching and filtering](#searching-and-filtering)
 - [Auditioning and dragging](#auditioning-and-dragging)
 - [Crops](#crops)
+- [Kits](#kits)
 - [Random, Rec and Last 10s](#random-rec-and-last-10s)
 - [Tags](#tags)
 - [Keyboard shortcuts](#keyboard-shortcuts)
@@ -57,6 +58,14 @@ Dragging the sample now drags just the crop. The **⠿ Drag crop · Save…** ha
 
 Dragged crops aren't kept: they're written to `~/Library/Caches/Sample Manager/Crops` and deleted a week after their last drag. So Logic keeps its own copy, turn on **File › Project Settings › Assets › Copy audio files into project** (and save it in your project template) — saving the project then copies the crop in. Use **Save…** to keep a crop for good.
 
+## Kits
+
+A kit is a folder of sounds you've gathered, at `~/Music/Sample Manager/Kits/<name>`. Select one or more samples and press **⌘K** (or right-click → **New Kit from Selection…**), name it — the name defaults to the folder or tag the sounds share — and they're copied in. Right-click → **Add to Kit** puts a selection into an existing kit.
+
+Kits hold real copies, so a kit folder is self-contained: drag it from the sidebar into Logic or the Finder and everything comes with it. A sample with a crop is copied as just the cropped part (a WAV); tags you edited by hand are carried over. Two sounds with the same name become `Kick.wav` and `Kick 2.wav`. If some files can't be copied (a missing source, a full disk) the rest still are, and you're told which.
+
+The folder is inside your library, so kits are indexed and searchable like any other folder and show in the sidebar under **Kits**; click one to see its sounds. Right-click a kit for **Rename Kit…** and **Delete Kit…** (moves the folder to the Trash). Right-click sounds inside a kit for **Remove from Kit**, which moves those copies to the Trash; the originals are never touched.
+
 ## Random, Rec and Last 10s
 
 **R** or **⤮ Random** plays a random sample from whatever the current filters show, or from the whole library when nothing is filtered. **⇧R** (or ⇧-click ⤮ Random) also drops a crop region at a random spot in it and loops it — as long as the last crop you made, or 1 second before you've made one. Drag it into Logic like any crop.
@@ -82,6 +91,7 @@ Press **Enter** or **T** (or click a row's tag cell) to edit a sample's tags, co
 | Backspace (empty search) | Remove the last chip |
 | ⌘Z / ⇧⌘Z | Undo / redo a tag edit (while typing: undo the typing) |
 | ⌘A | Select all visible |
+| ⌘K | New kit from the selected sounds |
 | R / ⇧R | Random sample / random sample with a random loop region |
 | L | Loop on / off |
 | I / O | Crop start / end at the playhead |
