@@ -247,16 +247,27 @@ function makeLarge(opts) {
     fs.renameSync(tmp, file);
     log(`large/${path.basename(file)}: ${what}, ${mb(fs.statSync(file).size)}, ${((Date.now() - t0) / 1000).toFixed(1)} s`);
   };
-  const afconvert = (args) => execFileSync('/usr/bin/afconvert', args, { stdio: 'inherit' });
+  // Encoded with afconvert on macOS, else ffmpeg (the app's converter, see
+  // src/main/convert.js). ffmpeg can't write AAC into CAF, so there's no AAC
+  // CAF without afconvert; with neither, only the WAV.
+  const hasAfconvert = process.platform === 'darwin' && fs.existsSync('/usr/bin/afconvert');
+  const ffmpeg = hasAfconvert ? null : require('../src/main/convert').ffmpegPath();
+  const run = (bin, args) => execFileSync(bin, args, { stdio: 'inherit' });
+  const encode = { // [afconvert args, ffmpeg args] for (input, output)
+    aiff: (i, o) => (hasAfconvert ? ['/usr/bin/afconvert', ['-f', 'AIFF', '-d', 'BEI24', i, o]] : [ffmpeg, ['-v', 'error', '-y', '-i', i, '-c:a', 'pcm_s24be', '-f', 'aiff', o]]),
+    alac: (i, o) => (hasAfconvert ? ['/usr/bin/afconvert', ['-f', 'caff', '-d', 'alac', i, o]] : [ffmpeg, ['-v', 'error', '-y', '-i', i, '-c:a', 'alac', '-f', 'caf', o]]),
+  };
   step(wav, `${opts.largeMin} min 48k/24-bit stereo`, (tmp) => writeLongWav(tmp, opts.largeMin));
-  step(path.join(dir, 'long.aif'), 'same audio as AIFF', (tmp) => afconvert(['-f', 'AIFF', '-d', 'BEI24', wav, tmp]));
-  step(path.join(dir, 'long-alac.caf'), 'same audio as ALAC CAF', (tmp) => afconvert(['-f', 'caff', '-d', 'alac', wav, tmp]));
+  if (!hasAfconvert && !ffmpeg) return log('large/: no afconvert or ffmpeg — only the WAV');
+  step(path.join(dir, 'long.aif'), 'same audio as AIFF', (tmp) => run(...encode.aiff(wav, tmp)));
+  step(path.join(dir, 'long-alac.caf'), 'same audio as ALAC CAF', (tmp) => run(...encode.alac(wav, tmp)));
+  if (!hasAfconvert) return log('large/: no AAC CAF without afconvert');
   // AAC is slow to encode, so a shorter one: ~10 minutes.
   step(path.join(dir, 'medium-aac.caf'), '~10 min AAC CAF', (tmp) => {
     const cut = path.join(dir, 'cut.part.wav');
     writeLongWav(cut, Math.min(10, opts.largeMin));
     try {
-      afconvert(['-f', 'caff', '-d', 'aac', '-b', '256000', cut, tmp]);
+      run('/usr/bin/afconvert', ['-f', 'caff', '-d', 'aac', '-b', '256000', cut, tmp]);
     } finally {
       fs.rmSync(cut, { force: true });
     }

@@ -1,5 +1,8 @@
 'use strict';
 
+// Path separator of the library's paths ('\\' on Windows).
+const SEP = window.sm.sep || '/';
+
 const ROW_H = 30;
 const MAX_LIST_H = 8e6; // px; browsers cap an element's height (Chromium near 16.7M, ~560k rows)
 const OVERSCAN = 8;
@@ -314,7 +317,7 @@ async function applyLibraryChange(c) {
     filterChanged = applyRail(await window.sm.listTags());
   }
 
-  const under = (dir, top) => dir === top || dir.startsWith(top + '/');
+  const under = (dir, top) => dir === top || dir.startsWith(top + SEP);
   const inView =
     filterChanged || !state.filter.dirs.size || c.dirs.some(({ dir }) => [...state.filter.dirs].some((f) => under(dir, f)));
   // A list query already on its way may predate this change: reload to be sure.
@@ -461,7 +464,7 @@ function buildTree() {
     paths.add(f.path);
   }
   const hidden = [...state.hidden];
-  const isHidden = (p) => hidden.some((h) => p === h || p.startsWith(h + '/'));
+  const isHidden = (p) => hidden.some((h) => p === h || p.startsWith(h + SEP));
   for (const { folderId, dir, n } of state.dirs) {
     const root = roots.get(folderId);
     if (!root) continue;
@@ -471,12 +474,12 @@ function buildTree() {
       if (visible) node.n += n;
     };
     add(root);
-    if (!dir.startsWith(root.path + '/')) continue;
+    if (!dir.startsWith(root.path + SEP)) continue;
     let node = root;
-    for (const seg of dir.slice(root.path.length + 1).split('/')) {
+    for (const seg of dir.slice(root.path.length + 1).split(SEP)) {
       let child = node.kids.get(seg);
       if (!child) {
-        child = { path: `${node.path}/${seg}`, name: seg, n: 0, total: 0, kids: new Map() };
+        child = { path: `${node.path}${SEP}${seg}`, name: seg, n: 0, total: 0, kids: new Map() };
         node.kids.set(seg, child);
         paths.add(child.path);
       }
@@ -525,7 +528,7 @@ function renderChips() {
   for (const d of f.dirs) {
     const c = chip('dir', dirLabel(d), () => changeView('dir', () => f.dirs.delete(d)));
     c.title = `${d}\nClick to show in the sidebar`;
-    c.querySelector('.fchip-label').addEventListener('click', () => revealInSidebar(`${d}/x`));
+    c.querySelector('.fchip-label').addEventListener('click', () => revealInSidebar(`${d}${SEP}x`));
     chips.push(c);
   }
   if (f.untagged) chips.push(chip('tag untagged', 'untagged', () => changeView('tag', () => (f.untagged = false))));
@@ -794,7 +797,7 @@ function renderSearchScope() {
   const dirs = [...state.filter.dirs];
   const name = (p) => {
     const root = state.folders.find((f) => f.path === p);
-    return root ? root.label : p.split('/').pop();
+    return root ? root.label : p.split(SEP).pop();
   };
   const scope = !dirs.length ? '' : dirs.length === 1 ? ` in “${name(dirs[0])}”` : ` in ${dirs.length} folders`;
   const hasChips = state.filter.queries.length || state.filter.tags.size || state.filter.untagged;
@@ -816,7 +819,7 @@ function collapseFolders() {
 function renderFolders() {
   const scroll = ui.folders.scrollTop;
   ui.folders.replaceChildren();
-  if (!state.tree.length) ui.folders.append(el('li', 'hint', 'No folders — ⌘O to add one'));
+  if (!state.tree.length) ui.folders.append(el('li', 'hint', window.sm.keys('No folders — ⌘O to add one')));
 
   // Filter box: keep folders whose name fuzzy-matches, plus the folders leading
   // to them (opened automatically — without touching state.expanded, so
@@ -1239,7 +1242,7 @@ function dropRows(c) {
     return;
   }
   const dirs = new Set(c.dirs.map((d) => d.dir));
-  for (const [id, r] of rowCache) if (dirs.has(r.path.slice(0, r.path.lastIndexOf('/')))) rowCache.delete(id);
+  for (const [id, r] of rowCache) if (dirs.has(r.path.slice(0, r.path.lastIndexOf(SEP)))) rowCache.delete(id);
 }
 
 // --- selection -------------------------------------------------------------------
@@ -1850,8 +1853,8 @@ ui.wave.addEventListener(
     const [v0, v1] = viewSpan();
     const span = v1 - v0;
     const dur = player.buf.duration;
-    if (e.altKey) {
-      // ⌥-scroll (either axis) zooms around the mouse. Deltas are clamped so a
+    if (e.altKey || (window.sm.platform !== 'darwin' && e.ctrlKey)) {
+      // ⌥-scroll (either axis; also Ctrl-scroll off macOS) zooms around the mouse. Deltas are clamped so a
       // fast trackpad flick can't jump from full view to max zoom at once.
       e.preventDefault();
       const delta = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
@@ -1930,10 +1933,21 @@ function commitRegion(start, end) {
   player.regions.set(row.id, reg);
   lastCropLength = reg.end - reg.start;
   setLoop(true);
-  window.sm.prepareCrop(row.id, reg.start, reg.end).catch((err) => {
-    console.error(err);
-    if (player.regions.get(row.id) === reg) flash(`Can't crop ${row.format.toUpperCase()} files — dragging will use the whole sample`);
-  });
+  const buf = player.buf;
+  window.sm
+    .prepareCrop(row.id, reg.start, reg.end)
+    // The library couldn't cut it (e.g. an MP3 on Windows without ffmpeg):
+    // cut it here from the audio already decoded for playback. That's at the
+    // player's sample rate rather than the file's.
+    .catch((err) => {
+      if (player.regions.get(row.id) !== reg) return;
+      console.warn(`crop: ${err.message}; cutting it from the decoded audio`);
+      return window.sm.provideCrop(row.id, reg.start, reg.end, encodeRegion(buf, reg.start, reg.end));
+    })
+    .catch((err) => {
+      console.error(err);
+      if (player.regions.get(row.id) === reg) flash(`Can't crop ${row.format.toUpperCase()} files — dragging will use the whole sample`);
+    });
   updateRowClasses();
   // Already looping and the playhead is inside: keep going with the new loop
   // points. Otherwise audition the crop from its start.
@@ -2205,27 +2219,41 @@ function trimSilence(l, r) {
 }
 
 // 24-bit stereo PCM WAV — opens anywhere (Logic, Ableton, Finder preview).
+// [start, end) seconds of an AudioBuffer as a 24-bit PCM WAV, all its channels.
+function encodeRegion(buf, start, end) {
+  const f0 = Math.max(0, Math.floor(start * buf.sampleRate));
+  const f1 = Math.min(buf.length, Math.ceil(end * buf.sampleRate));
+  const chans = Array.from({ length: buf.numberOfChannels }, (_, c) => buf.getChannelData(c).subarray(f0, f1));
+  return encodePcm24(chans, buf.sampleRate);
+}
+
 function encodeWav(l, r, rate) {
-  const n = l.length;
-  const buf = new ArrayBuffer(44 + n * 6);
+  return encodePcm24([l, r], rate);
+}
+
+function encodePcm24(chans, rate) {
+  const n = chans[0].length;
+  const nc = chans.length;
+  const block = nc * 3;
+  const buf = new ArrayBuffer(44 + n * block);
   const dv = new DataView(buf);
   const str = (o, t) => [...t].forEach((c, i) => dv.setUint8(o + i, c.charCodeAt(0)));
   str(0, 'RIFF');
-  dv.setUint32(4, 36 + n * 6, true);
+  dv.setUint32(4, 36 + n * block, true);
   str(8, 'WAVE');
   str(12, 'fmt ');
   dv.setUint32(16, 16, true);
   dv.setUint16(20, 1, true);
-  dv.setUint16(22, 2, true);
+  dv.setUint16(22, nc, true);
   dv.setUint32(24, rate, true);
-  dv.setUint32(28, rate * 6, true);
-  dv.setUint16(32, 6, true);
+  dv.setUint32(28, rate * block, true);
+  dv.setUint16(32, block, true);
   dv.setUint16(34, 24, true);
   str(36, 'data');
-  dv.setUint32(40, n * 6, true);
+  dv.setUint32(40, n * block, true);
   let o = 44;
   for (let i = 0; i < n; i++) {
-    for (const ch of [l, r]) {
+    for (const ch of chans) {
       const v = Math.max(-1, Math.min(1, ch[i]));
       const s24 = Math.round(v < 0 ? v * 0x800000 : v * 0x7fffff);
       dv.setUint8(o, s24 & 0xff);
@@ -2251,7 +2279,7 @@ async function saveAudio(l, r, name) {
   }
   const saved = await window.sm.saveRecording(encodeWav(l, r, tap.rate), name);
   if (!saved) return;
-  const file = saved.path.split('/').pop();
+  const file = saved.path.split(SEP).pop();
   if (saved.id == null) {
     flash(`Saved ${file} (outside your library)`);
     return;
@@ -2271,7 +2299,7 @@ async function revealSample(id, filePath) {
     if (state.editing) cancelEdit();
     clearTimeout(searchTimer);
     ui.search.value = '';
-    state.filter = { search: '', queries: [], tags: new Set(), untagged: false, dirs: new Set([filePath.slice(0, filePath.lastIndexOf('/'))]) };
+    state.filter = { search: '', queries: [], tags: new Set(), untagged: false, dirs: new Set([filePath.slice(0, filePath.lastIndexOf(SEP))]) };
     renderRail();
     await refreshList({ reset: true });
     i = state.ids.indexOf(id);
@@ -2513,7 +2541,7 @@ window.addEventListener('keydown', (e) => {
 });
 
 // --- kits ---------------------------------------------------------------------------------
-// A kit is a folder of copies under ~/Music/Sample Manager/Kits. Main and the
+// A kit is a folder of copies under Sample Manager/Kits in the Music folder. Main and the
 // library worker do the copying; the page names kits and shows the result.
 
 let kitsDir = '';
@@ -2521,7 +2549,7 @@ window.sm.kitsDir().then((dir) => {
   kitsDir = dir;
   renderFolders();
 });
-const isKit = (p) => !!kitsDir && p.startsWith(kitsDir + '/') && p.indexOf('/', kitsDir.length + 1) < 0;
+const isKit = (p) => !!kitsDir && p.startsWith(kitsDir + SEP) && p.indexOf(SEP, kitsDir.length + 1) < 0;
 const sounds = (n) => `${n.toLocaleString()} ${n === 1 ? 'sound' : 'sounds'}`;
 
 const kitUi = {
@@ -2637,7 +2665,7 @@ function showKit(dir, select, tries = 0) {
         state.filter.dirs.add(dir);
       });
     }
-    revealInSidebar(`${dir}/x`);
+    revealInSidebar(`${dir}${SEP}x`);
   } else if (tries < 15) setTimeout(() => showKit(dir, select, tries + 1), 200);
 }
 
@@ -2683,14 +2711,14 @@ ui.foldersMenu.addEventListener('click', () => {
 // × removes just that one.
 function dirLabel(p) {
   const root = state.folders.find((f) => f.path === p);
-  return root ? root.label : p.split('/').pop();
+  return root ? root.label : p.split(SEP).pop();
 }
 
 function renderFolderChips() {
   const chips = [...state.filter.dirs].map((d) => {
     const c = chip('dir', dirLabel(d), () => changeView('dir', () => state.filter.dirs.delete(d)));
     c.title = d;
-    c.querySelector('.fchip-label').addEventListener('click', () => revealInSidebar(`${d}/x`));
+    c.querySelector('.fchip-label').addEventListener('click', () => revealInSidebar(`${d}${SEP}x`));
     return c;
   });
   ui.folderChips.replaceChildren(...chips);
@@ -2737,11 +2765,11 @@ wireRailFilter(ui.tagFilter, renderTags, ui.tags);
 // "Show in Sidebar": open the tree down to a sample's folder, scroll to it and
 // flash it. Doesn't touch filters. Stops at a hidden folder (can't be opened).
 function revealInSidebar(filePath) {
-  const dir = filePath.slice(0, filePath.lastIndexOf('/'));
-  const root = state.tree.find((r) => dir === r.path || dir.startsWith(r.path + '/'));
+  const dir = filePath.slice(0, filePath.lastIndexOf(SEP));
+  const root = state.tree.find((r) => dir === r.path || dir.startsWith(r.path + SEP));
   if (!root) return;
   let node = root;
-  const segs = dir === root.path ? [] : dir.slice(root.path.length + 1).split('/');
+  const segs = dir === root.path ? [] : dir.slice(root.path.length + 1).split(SEP);
   for (const seg of segs) {
     const kid = node.kids.get(seg);
     if (!kid || state.hidden.has(node.path)) break;
@@ -2792,7 +2820,7 @@ ui.cropSave.addEventListener('click', async () => {
   if (!player.row || !curRegion()) return;
   try {
     const saved = await window.sm.saveCrop(player.row.id);
-    if (saved) flash(`Saved ${saved.split('/').pop()}`);
+    if (saved) flash(`Saved ${saved.split(SEP).pop()}`);
   } catch (err) {
     console.error(err);
     flash("Couldn't save the crop");

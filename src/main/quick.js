@@ -8,8 +8,16 @@ const { app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeImage, screen, 
 // window is closed so the hotkey always works.
 
 // ⌘Space is Spotlight and ⌥⌘Space the Finder search window, so default to
-// ⌃⌥Space. Override with {"quickSearchHotkey": "…"} in settings.json (userData).
+// ⌃⌥Space (Ctrl+Alt+Space on Windows and Linux, where Alt+Space is the window
+// menu). Override with {"quickSearchHotkey": "…"} in settings.json (userData).
 const DEFAULT_HOTKEY = 'Control+Alt+Space';
+
+const isMac = process.platform === 'darwin';
+
+// Passed by the login item on Windows (which has no "opened at login" flag),
+// so a login launch starts in the tray. See index.js.
+const HIDDEN_ARG = '--hidden';
+const loginArgs = isMac ? undefined : { args: [HIDDEN_ARG] };
 
 let panel = null;
 let tray = null;
@@ -24,18 +32,23 @@ function readSettings() {
   }
 }
 
-function prettyHotkey(acc) {
+function prettyHotkey(acc, platform = process.platform) {
   if (!acc) return '';
+  if (platform !== 'darwin') {
+    const names = { Control: 'Ctrl', CommandOrControl: 'Ctrl', CmdOrCtrl: 'Ctrl', Command: 'Ctrl', Cmd: 'Ctrl', Option: 'Alt', Super: 'Win', Meta: 'Win' };
+    return acc.split('+').map((k) => names[k] ?? k).join('+');
+  }
   const map = { Control: '⌃', Ctrl: '⌃', Alt: '⌥', Option: '⌥', Shift: '⇧', Command: '⌘', Cmd: '⌘', CommandOrControl: '⌘', CmdOrCtrl: '⌘', Space: 'Space' };
   return acc.split('+').map((k) => map[k] ?? k).join('');
 }
 
 function createPanel() {
   panel = new BrowserWindow({
-    // An NSPanel: floats over other apps (full-screen Logic included) and takes
-    // typing without making Sample Manager the active app, so the DAW stays
-    // frontmost for the drop.
-    type: 'panel',
+    // macOS: an NSPanel — floats over other apps (full-screen Logic included)
+    // and takes typing without making Sample Manager the active app, so the
+    // DAW stays frontmost for the drop. Elsewhere a frameless, always-on-top
+    // window that isn't in the taskbar.
+    ...(isMac ? { type: 'panel' } : {}),
     width: 720,
     height: 470,
     show: false,
@@ -59,7 +72,7 @@ function createPanel() {
   // skipTransformProcessType: without it Electron switches the whole app to a
   // background "UIElement" app to do this — which then stayed that way: no
   // ⌘Tab entry, no Dock icon, and relaunching from Spotlight showed nothing.
-  panel.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
+  if (isMac) panel.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
   panel.setAlwaysOnTop(true, 'floating');
   opts.connectPage(panel.webContents);
   panel.loadFile(path.join(opts.rendererDir, 'quick.html'));
@@ -96,8 +109,10 @@ function toggle() {
 }
 
 function trayIcon() {
-  // Template image (macOS tints it for light/dark menu bars): a waveform glyph.
-  const S = 36; // 18pt @2x
+  // A waveform glyph. macOS: a template image, which it tints for light and
+  // dark menu bars. Windows/Linux: amber, which reads on light and dark
+  // taskbars alike.
+  const S = isMac ? 36 : 32; // 18pt / 16px, @2x
   const buf = Buffer.alloc(S * S * 4);
   const bars = [8, 16, 26, 14, 30, 20, 10, 22, 12];
   const bw = 2;
@@ -107,11 +122,14 @@ function trayIcon() {
     for (let x = 0; x < S; x++) {
       const bi = Math.floor((x - x0) / (bw + gap));
       const inBar = x >= x0 && bi < bars.length && (x - x0) % (bw + gap) < bw && Math.abs(y - S / 2) <= bars[bi] / 2;
-      if (inBar) buf[(y * S + x) * 4 + 3] = 255; // black, opaque (BGRA: alpha last)
+      if (!inBar) continue;
+      const i = (y * S + x) * 4; // BGRA
+      if (!isMac) buf.set([60, 170, 255], i); // amber
+      buf[i + 3] = 255; // opaque (black on macOS)
     }
   }
   const img = nativeImage.createFromBitmap(buf, { width: S, height: S, scaleFactor: 2 });
-  img.setTemplateImage(true);
+  if (isMac) img.setTemplateImage(true);
   return img;
 }
 
@@ -119,8 +137,13 @@ function buildTray() {
   if (!tray) {
     tray = new Tray(trayIcon());
     tray.setToolTip('Sample Manager');
+    // Windows/Linux: clicking the icon opens the window (the menu is on
+    // right-click). macOS shows the menu on click.
+    if (!isMac) tray.on('click', () => opts.openMainWindow());
   }
-  const login = app.getLoginItemSettings().openAtLogin;
+  // Linux has no login items here; autostart is left to the desktop.
+  const canLogin = process.platform !== 'linux';
+  const login = canLogin && app.getLoginItemSettings(loginArgs).openAtLogin;
   tray.setContextMenu(
     Menu.buildFromTemplate([
       {
@@ -128,16 +151,20 @@ function buildTray() {
         click: show,
       },
       { label: 'Open Sample Manager', click: () => opts.openMainWindow() },
-      { type: 'separator' },
-      {
-        label: 'Open at Login',
-        type: 'checkbox',
-        checked: login,
-        click: (item) => {
-          app.setLoginItemSettings({ openAtLogin: item.checked });
-          buildTray();
-        },
-      },
+      ...(canLogin
+        ? [
+            { type: 'separator' },
+            {
+              label: 'Open at Login',
+              type: 'checkbox',
+              checked: login,
+              click: (item) => {
+                app.setLoginItemSettings({ openAtLogin: item.checked, ...loginArgs });
+                buildTray();
+              },
+            },
+          ]
+        : []),
       { type: 'separator' },
       // Explicit app.quit() (not role: 'quit'): the path verified to quit in one go.
       { label: 'Quit Sample Manager', click: () => app.quit() },
@@ -175,4 +202,4 @@ function dispose() {
   globalShortcut.unregisterAll();
 }
 
-module.exports = { init, show, hide, toggle, dispose, prettyHotkey, hotkey: () => hotkey };
+module.exports = { init, show, hide, toggle, dispose, prettyHotkey, hotkey: () => hotkey, HIDDEN_ARG };

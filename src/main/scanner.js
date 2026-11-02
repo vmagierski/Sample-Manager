@@ -12,16 +12,34 @@ let hash = '';
 //   { "tag": "kick", "pattern": "kick|..." }
 //     case-insensitive regex matched against the sample's path relative to its
 //     watched folder, so folder names ("Kicks/", "Loops/") count.
-//   { "tag": "my projects", "folder": "~/Music/Logic" }
-//     tags everything at or below that absolute folder (~ = home).
-function loadRules(file) {
+//   { "tag": "recorded", "folder": "{appFolder}/Recordings" }
+//     tags everything at or below that absolute folder. "~" is your home
+//     folder and "{appFolder}" the app's own folder (opts.appFolder: Sample
+//     Manager in your Music folder); "/" works as a separator everywhere.
+// Any rule can have "platform": "darwin" (or a list, e.g. ["darwin",
+// "win32"]) to apply only there.
+function expandFolder(folder, { appFolder, home = os.homedir() } = {}) {
+  let f = folder.replace(/^~(?=$|[\\/])/, home);
+  if (f.startsWith('{appFolder}')) {
+    if (!appFolder) return null; // nothing to expand it to: the rule matches nothing
+    f = appFolder + f.slice('{appFolder}'.length);
+  }
+  return path.resolve(f);
+}
+
+function loadRules(file, opts = {}) {
   const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
   const list = Array.isArray(raw) ? raw : raw.rules;
   const compiled = [];
-  for (const { tag, pattern, folder } of list || []) {
+  for (const { tag, pattern, folder, platform } of list || []) {
     if (!tag || (!pattern && !folder)) continue;
+    if (platform && ![].concat(platform).includes(process.platform)) continue;
     if (folder) {
-      const abs = path.resolve(folder.replace(/^~(?=$|\/)/, os.homedir()));
+      const abs = expandFolder(folder, opts);
+      if (!abs) {
+        compiled.push({ tag, folder: null }); // its tag still shows, with no samples
+        continue;
+      }
       let real = abs;
       try {
         real = fs.realpathSync(abs); // library paths are canonical realpaths
@@ -47,9 +65,9 @@ function tagsFor(relPath, absPath) {
   const subject = relPath.split(path.sep).join('/');
   const out = [];
   for (const { tag, re, folder } of rules) {
-    const hit = folder
-      ? absPath != null && (absPath === folder || absPath.startsWith(folder + path.sep))
-      : re.test(subject);
+    const hit = re
+      ? re.test(subject)
+      : folder != null && absPath != null && (absPath === folder || absPath.startsWith(folder + path.sep));
     if (hit && !out.includes(tag)) out.push(tag);
   }
   return out;
@@ -101,4 +119,4 @@ const rulesHash = () => hash || null;
 
 const ruleTags = () => [...new Set(rules.map((r) => r.tag))];
 
-module.exports = { loadRules, rulesHash, ruleTags, tagsFor, isAudio, walk, AUDIO_EXTS };
+module.exports = { loadRules, expandFolder, rulesHash, ruleTags, tagsFor, isAudio, walk, AUDIO_EXTS };

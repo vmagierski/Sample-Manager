@@ -197,8 +197,11 @@ async function runChild(op, file, at) {
   process.stdout.write(JSON.stringify({ ms, bytes, peakRss: process.resourceUsage().maxRSS * 1024, baseRss: base }) + '\n');
 }
 
-// Seconds, from the file header (macOS afinfo).
+// Seconds, from the file header (macOS afinfo). Elsewhere every large file
+// is the same audio as long.wav (48 kHz, 24-bit stereo, 44-byte header; the
+// AAC CAF is only made with afconvert), so its size gives the length.
 function duration(file) {
+  if (!fs.existsSync('/usr/bin/afinfo')) return (fs.statSync(path.join(path.dirname(file), 'long.wav')).size - 44) / (48000 * 6);
   const out = execFileSync('/usr/bin/afinfo', [file], { encoding: 'utf8' });
   return +(/estimated duration: ([\d.]+)/.exec(out) || [0, 0])[1];
 }

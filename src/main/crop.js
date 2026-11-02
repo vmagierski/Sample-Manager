@@ -1,16 +1,18 @@
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { app } = require('electron');
 const lookup = require('./lookup');
 const library = require('./library');
 const { cropFileName } = require('./kits');
+const paths = require('./paths');
 
 // Crops dragged into a DAW land here, outside the library: they're not
 // kept. Logic copies a dropped file into the project when it's saved (File ›
 // Project Settings › Assets › "Copy audio files into project"), so a crop
 // only has to outlive that — it's deleted KEEP_DAYS after its last drag.
-// Not a temp dir: macOS clears those on its own schedule. Use Save… to keep one.
-const CROP_DIR = process.env.SM_CROP_DIR || path.join(app.getPath('home'), 'Library', 'Caches', 'Sample Manager', 'Crops');
+// Not a temp dir: the OS clears those on its own schedule. Use Save… to keep one.
+const CROP_DIR = process.env.SM_CROP_DIR || path.join(paths.cacheDir({ home: app.getPath('home') }), 'Crops');
 const KEEP_DAYS = 7;
 
 // Regions set in the player are rendered to a temp file right away (by the
@@ -24,6 +26,22 @@ function prepare(id, start, end) {
   if (!row) return Promise.reject(new Error('unknown sample'));
   if (!(end > start)) return Promise.reject(new Error('empty region'));
   const file = library.call('renderCrop', row.path, start, end);
+  pending.set(id, { start, end, file, source: row.path });
+  file.catch(() => pending.get(id)?.file === file && pending.delete(id));
+  return file.then(() => true);
+}
+
+// The page cut the crop itself, from the audio it decoded, because the
+// library worker couldn't (an MP3 on Windows without ffmpeg, say). `bytes` is
+// the WAV. Replaces whatever was prepared for this sample.
+let pageSeq = 0;
+function provide(id, start, end, bytes) {
+  clear(id);
+  const row = lookup.getById(id);
+  if (!row) return Promise.reject(new Error('unknown sample'));
+  if (!(end > start) || !(bytes instanceof Uint8Array) || bytes.length < 44) return Promise.reject(new Error('bad crop'));
+  const tmp = path.join(os.tmpdir(), `sm-crop-${process.pid}-page-${++pageSeq}.wav`);
+  const file = fs.promises.writeFile(tmp, bytes).then(() => tmp);
   pending.set(id, { start, end, file, source: row.path });
   file.catch(() => pending.get(id)?.file === file && pending.delete(id));
   return file.then(() => true);
@@ -48,6 +66,13 @@ const cropName = cropFileName;
 function region(id) {
   const p = pending.get(id);
   return p ? { start: p.start, end: p.end } : null;
+}
+
+// The rendered crop's temp file for a sample with a region, or null if
+// there's no region or it couldn't be rendered.
+async function renderedFile(id) {
+  const p = pending.get(id);
+  return p ? p.file.catch(() => null) : null;
 }
 
 // Final file for a drag. The same region of the same sample always maps to the
@@ -100,4 +125,4 @@ function suggestedName(id) {
   return p ? cropName(p.source, p.start, p.end) : null;
 }
 
-module.exports = { prepare, clear, clearAll, has, region, materialize, saveTo, suggestedName, prune, CROP_DIR, KEEP_DAYS };
+module.exports = { prepare, provide, renderedFile, clear, clearAll, has, region, materialize, saveTo, suggestedName, prune, CROP_DIR, KEEP_DAYS };

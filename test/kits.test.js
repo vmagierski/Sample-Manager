@@ -11,6 +11,9 @@ test('safeName: one path component, nothing hidden or odd', () => {
   assert.strictEqual(kits.safeName('  a/b:c  '), 'a-b-c');
   assert.strictEqual(kits.safeName('.hidden'), 'hidden');
   assert.strictEqual(kits.safeName('..'), '');
+  assert.strictEqual(kits.safeName('NUL.wav'), '_NUL.wav'); // Windows device names
+  assert.strictEqual(kits.safeName('com1'), '_com1');
+  assert.strictEqual(kits.safeName('Console'), 'Console');
   assert.strictEqual(kits.safeName('name. '), 'name');
   assert.strictEqual(kits.safeName('x\u0000y\ttab'), 'x-y-tab');
   assert.strictEqual(kits.safeName(''), '');

@@ -1,5 +1,5 @@
 // One load at a time per owner (a window), newest wins. A new request aborts
-// the one in flight through its AbortSignal — killing its afconvert or file
+// the one in flight through its AbortSignal — killing its conversion (afconvert / ffmpeg) or file
 // read — unless it's for the same sample, which it then shares. A superseded
 // load resolves to null, so its bytes are never sent to the page.
 function latestWins() {

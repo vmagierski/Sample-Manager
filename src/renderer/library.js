@@ -48,3 +48,26 @@
     onScanStatus: on('scan:status'),
   };
 })();
+
+// Labels are written the macOS way (⌘O, ⇧-click, Finder, Logic). Elsewhere,
+// window.sm.keys rewrites them — ⌘O → Ctrl+O, ⇧-click → Shift-click, Finder →
+// File Explorer — and the page's static titles and key hints are rewritten
+// once here. (The shortcuts themselves accept Ctrl wherever they take ⌘.)
+(() => {
+  const platform = window.sm.platform || 'darwin';
+  if (platform === 'darwin') {
+    window.sm.keys = (s) => s;
+    return;
+  }
+  const mods = { '⌘': 'Ctrl', '⌃': 'Ctrl', '⌥': 'Alt', '⇧': 'Shift' };
+  const fileManager = platform === 'win32' ? 'File Explorer' : 'file manager';
+  window.sm.keys = (s) =>
+    String(s)
+      .replace(/([⌘⌃⌥⇧]+)(-?)/g, (_m, keys, dash) => [...new Set([...keys].map((k) => mods[k]))].join('+') + (dash || '+'))
+      .replace(/\bFinder\b/g, fileManager)
+      .replace(/\bLogic\b/g, 'your DAW');
+  for (const e of document.querySelectorAll('[title]')) e.title = window.sm.keys(e.title);
+  for (const e of document.querySelectorAll('kbd, #hints span')) {
+    for (const n of e.childNodes) if (n.nodeType === Node.TEXT_NODE) n.textContent = window.sm.keys(n.textContent);
+  }
+})();

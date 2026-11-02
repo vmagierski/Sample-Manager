@@ -140,7 +140,14 @@ const MIGRATIONS = [
 let db;
 let q;
 
-const dirOf = (p) => p.slice(0, p.lastIndexOf('/'));
+// Library paths are native paths: '/' between folders, '\\' on Windows.
+// Everything below a folder is the range [dir + DIR_SEP, dir + DIR_END):
+// DIR_END is the character right after the separator ('0' after '/', ']'
+// after '\\'), so a prefix search is a range the path index can use.
+const DIR_SEP = path.sep;
+const DIR_END = String.fromCharCode(DIR_SEP.charCodeAt(0) + 1);
+
+const dirOf = (p) => p.slice(0, p.lastIndexOf(DIR_SEP));
 
 function open(file) {
   db = new Database(file);
@@ -190,8 +197,7 @@ function open(file) {
     getById: db.prepare('SELECT id, path, filename, folder_id, tags_edited FROM samples WHERE id = ?'),
     deleteByPath: db.prepare('DELETE FROM samples WHERE path = ?'),
     deleteByIdPath: db.prepare('DELETE FROM samples WHERE id = ? AND path = ?'),
-    // Everything below a folder: path in [dir + '/', dir + '0') — '0' sorts
-    // right after '/', so this is a range the path index can use.
+    // Everything below a folder: path in range(dir) (see DIR_END).
     pathsUnderDir: db.prepare('SELECT path, folder_id AS folderId FROM samples WHERE path >= ? AND path < ?'),
     deleteUnderDir: db.prepare('DELETE FROM samples WHERE path >= ? AND path < ?'),
     movePath: db.prepare(`
@@ -368,7 +374,7 @@ function takeChanges() {
 
 // SQL for "path is below dir", as a range the path index can use.
 const under = (col) => `(${col} >= ? AND ${col} < ?)`;
-const range = (dir) => [dir + '/', dir + '0'];
+const range = (dir) => [dir + DIR_SEP, dir + DIR_END];
 
 // --- tags -----------------------------------------------------------------
 
@@ -497,7 +503,7 @@ const deleteTag = (name) => batch(() => {
 // Hidden folders not inside another hidden folder.
 function outermostHidden() {
   const hidden = listHidden();
-  return hidden.filter((h) => !hidden.some((o) => h.startsWith(o + '/')));
+  return hidden.filter((h) => !hidden.some((o) => h.startsWith(o + DIR_SEP)));
 }
 
 // Counts leave out hidden folders: the stored counts minus those of the
@@ -758,7 +764,7 @@ function hiddenMask(dirs) {
 // Hidden folders a view leaves out — not a hidden folder you're explicitly
 // browsing (or a folder inside one), which shows its contents.
 function hiddenFor(browsingDirs) {
-  const browsing = (h) => browsingDirs.some((d) => d === h || d.startsWith(h + '/'));
+  const browsing = (h) => browsingDirs.some((d) => d === h || d.startsWith(h + DIR_SEP));
   return hiddenMask(listHidden().filter((h) => !browsing(h)));
 }
 

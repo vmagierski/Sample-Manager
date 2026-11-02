@@ -191,8 +191,19 @@ test('convcache: keys change with size and mtime', () => {
   assert.notStrictEqual(k(1, 2), k(2, 2));
 });
 
-// CAF needs macOS's afconvert.
-const hasAfconvert = fs.existsSync('/usr/bin/afconvert');
+// CAF needs a converter: afconvert on macOS, else ffmpeg (convert.js).
+const convert = require('../src/main/convert');
+const hasConverter = convert.available();
+const hasAfconvert = process.platform === 'darwin' && fs.existsSync('/usr/bin/afconvert');
+
+// A CAF of `src`: AAC like Apple Loops with afconvert; ffmpeg can't write AAC
+// into CAF, so ALAC there.
+function makeCaf(src, caf) {
+  const [bin, args] = hasAfconvert
+    ? ['/usr/bin/afconvert', ['-f', 'caff', '-d', 'aac', src, caf]]
+    : [convert.ffmpegPath(), ['-v', 'error', '-y', '-i', src, '-c:a', 'alac', '-f', 'caf', caf]];
+  return new Promise((resolve, reject) => require('child_process').execFile(bin, args, (e) => (e ? reject(e) : resolve())));
+}
 
 function wav16(frames) {
   const data = Buffer.alloc(frames * 2);
@@ -213,14 +224,13 @@ function wav16(frames) {
   return Buffer.concat([h, data]);
 }
 
-test('CAF: converted once, then served from the cache', { skip: !hasAfconvert }, async () => {
+test('CAF: converted once, then served from the cache', { skip: !hasConverter && 'no afconvert or ffmpeg' }, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sm-caf-'));
   convcache.configure(path.join(dir, 'cache'), 100 * MB);
   const src = path.join(dir, 'in.wav');
   const caf = path.join(dir, 'loop.caf');
   fs.writeFileSync(src, wav16(44100));
-  await new Promise((resolve, reject) =>
-    require('child_process').execFile('/usr/bin/afconvert', ['-f', 'caff', '-d', 'aac', src, caf], (e) => (e ? reject(e) : resolve())));
+  await makeCaf(src, caf);
 
   const first = await audio.readPlayable(caf);
   const w = audio.parseWav(first);
@@ -233,19 +243,35 @@ test('CAF: converted once, then served from the cache', { skip: !hasAfconvert },
   fs.rmSync(dir, { recursive: true });
 });
 
-test('CAF: an aborted conversion leaves nothing behind', { skip: !hasAfconvert }, async () => {
+test('CAF: an aborted conversion leaves nothing behind', { skip: !hasConverter && 'no afconvert or ffmpeg' }, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sm-caf-'));
   convcache.configure(path.join(dir, 'cache'), 100 * MB);
   const src = path.join(dir, 'in.wav');
   const caf = path.join(dir, 'long.caf');
   fs.writeFileSync(src, wav16(44100 * 120));
-  await new Promise((resolve, reject) =>
-    require('child_process').execFile('/usr/bin/afconvert', ['-f', 'caff', '-d', 'aac', src, caf], (e) => (e ? reject(e) : resolve())));
+  await makeCaf(src, caf);
   const ctrl = new AbortController();
   const p = audio.readPlayable(caf, ctrl.signal);
   setTimeout(() => ctrl.abort(), 5);
   await assert.rejects(p, (err) => err.name === 'AbortError');
   await new Promise((r) => setTimeout(r, 50)); // the temp file's unlink is async
   assert.deepStrictEqual(fs.readdirSync(path.join(dir, 'cache')), []);
+  fs.rmSync(dir, { recursive: true });
+});
+
+test('crop of a compressed file: decoded at its own rate, then cut', { skip: !hasConverter && 'no afconvert or ffmpeg' }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sm-m4a-'));
+  const src = path.join(dir, 'in.wav');
+  const m4a = path.join(dir, 'loop.m4a');
+  fs.writeFileSync(src, wav16(44100 * 2));
+  const [bin, args] = hasAfconvert
+    ? ['/usr/bin/afconvert', ['-f', 'm4af', '-d', 'alac', src, m4a]]
+    : [convert.ffmpegPath(), ['-v', 'error', '-y', '-i', src, '-c:a', 'alac', '-f', 'ipod', m4a]];
+  await new Promise((resolve, reject) => require('child_process').execFile(bin, args, (e) => (e ? reject(e) : resolve())));
+
+  const w = audio.parseWav(await audio.cropToWav(m4a, 0.5, 1.5));
+  assert.strictEqual(w.rate, 44100);
+  assert.strictEqual(w.blockAlign, 3); // 24-bit mono
+  assert.ok(Math.abs(w.frames - 44100) <= 1, `${w.frames} frames`);
   fs.rmSync(dir, { recursive: true });
 });

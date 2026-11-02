@@ -30,6 +30,10 @@ window.addEventListener('message', (e) => {
 // What goes through main: dialogs, menus, drag, windows. The library itself
 // (lists, tags, sample bytes, change events) is on the worker port.
 contextBridge.exposeInMainWorld('smMain', {
+  // 'darwin', 'win32', 'linux': for labels (⌘ vs Ctrl, Finder vs Explorer).
+  platform: process.platform,
+  // Separator in library paths (they're native paths).
+  sep: process.platform === 'win32' ? '\\' : '/',
   addFolder: () => ipcRenderer.invoke('folder:add'),
   removeFolder: (id) => ipcRenderer.invoke('folder:remove', id),
   saveRecording: (bytes, name) => ipcRenderer.invoke('recording:save', bytes, name),
@@ -38,6 +42,8 @@ contextBridge.exposeInMainWorld('smMain', {
   // (required, non-empty) drag icon.
   startDrag: (ids) => ipcRenderer.send('sample:startDrag', ids),
   prepareCrop: (id, start, end) => ipcRenderer.invoke('crop:prepare', id, start, end),
+  // A crop the page cut itself (WAV bytes) when the library couldn't.
+  provideCrop: (id, start, end, bytes) => ipcRenderer.invoke('crop:provide', id, start, end, bytes),
   clearCrop: (id) => ipcRenderer.invoke('crop:clear', id),
   saveCrop: (id) => ipcRenderer.invoke('crop:save', id),
   reveal: (id) => ipcRenderer.invoke('sample:reveal', id),

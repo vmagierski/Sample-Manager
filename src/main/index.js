@@ -7,6 +7,10 @@ const quick = require('./quick');
 const library = require('./library');
 const lookup = require('./lookup');
 const kits = require('./kits');
+const paths = require('./paths');
+const words = require('./words');
+
+const isMac = process.platform === 'darwin';
 
 // Same library for `npm start` and the installed .app (whose productName would
 // otherwise give it a different userData folder). Override for a throwaway
@@ -22,15 +26,17 @@ if (app.isPackaged && !fs.existsSync(RULES_PATH)) {
   fs.copyFileSync(BUNDLED_RULES, RULES_PATH);
 }
 
-// CAF → WAV conversions, kept across launches (convcache.js).
-const CONVERTED_DIR = process.env.SM_CACHE_DIR || path.join(app.getPath('home'), 'Library', 'Caches', 'Sample Manager', 'Converted');
+// CAF → WAV conversions, kept across launches (convcache.js), in the
+// platform's cache folder (paths.js).
+const CONVERTED_DIR = process.env.SM_CACHE_DIR || path.join(paths.cacheDir({ home: app.getPath('home') }), 'Converted');
 const CONVERTED_CAP = 2 * 1024 ** 3;
 
-// ~/Music/Sample Manager is the app's own folder; Rec / Recall save into its
-// Recordings subfolder by default. It's added to the library once (by the
-// worker), so saved files are indexed (and tagged "recorded" by
-// tag-rules.json) automatically.
-const APP_MUSIC_DIR = path.join(app.getPath('home'), 'Music', 'Sample Manager');
+// "Sample Manager" in the user's Music folder (wherever the OS says that is)
+// is the app's own folder; Rec / Recall save into its Recordings subfolder by
+// default. It's added to the library once (by the worker), so saved files are
+// indexed (and tagged "recorded" by tag-rules.json) automatically.
+// SM_MUSIC_DIR moves it.
+const APP_MUSIC_DIR = process.env.SM_MUSIC_DIR || paths.appMusicDir((name) => app.getPath(name));
 const RECORD_DIR = path.join(APP_MUSIC_DIR, 'Recordings');
 
 // Kits are folders of copies inside it: Kits/<name>/ (SM_KITS_DIR for tests).
@@ -55,10 +61,19 @@ function send(channel, ...args) {
 // The library worker (library-worker.js) does the scanning; it asks main
 // only for what needs a dialog.
 library.on('unreadable', (folder) => {
+  const message = `Sample Manager can't read “${folder.label}”`;
+  if (!isMac) {
+    dialog.showMessageBox(win, {
+      type: 'warning',
+      message,
+      detail: `${folder.path}\n\nYour user account doesn't have permission to read this folder. Its samples are kept until it can be read again.`,
+    });
+    return;
+  }
   dialog
     .showMessageBox(win, {
       type: 'warning',
-      message: `Sample Manager can't read “${folder.label}”`,
+      message,
       detail:
         `${folder.path}\n\nmacOS protects this folder. To include it, turn on Sample Manager under ` +
         'System Settings → Privacy & Security → Full Disk Access, then quit and reopen Sample Manager.',
@@ -93,7 +108,7 @@ async function pickAndAddFolders() {
     else if (r.existing) existing = r.existing;
     else added.push(r.folder);
   }
-  if (existing && win && !win.isDestroyed()) win.webContents.send('ui:showInSidebar', `${existing}/x`);
+  if (existing && win && !win.isDestroyed()) win.webContents.send('ui:showInSidebar', path.join(existing, 'x'));
   if (errors.length) dialog.showMessageBox(win, { type: 'warning', message: 'Some folders were not added', detail: errors.join('\n') });
   return { added, errors };
 }
@@ -125,6 +140,7 @@ function registerIpc() {
     openMainWindow();
   });
   ipcMain.handle('crop:prepare', (_e, id, start, end) => crop.prepare(id, +start, +end));
+  ipcMain.handle('crop:provide', (_e, id, start, end, bytes) => crop.provide(id, +start, +end, bytes));
   ipcMain.handle('crop:clear', (_e, id) => crop.clear(id));
   ipcMain.handle('crop:save', async (_e, id) => {
     const name = crop.suggestedName(id);
@@ -155,7 +171,7 @@ function registerIpc() {
 
 async function saveRecording(bytes, name) {
   fs.mkdirSync(RECORD_DIR, { recursive: true });
-  const safe = String(name || 'Recording.wav').replace(/[/:]/g, '-');
+  const safe = kits.safeName(name) || 'Recording.wav';
   const res = await dialog.showSaveDialog(win, {
     title: 'Save recording',
     defaultPath: path.join(RECORD_DIR, safe),
@@ -175,7 +191,12 @@ async function saveRecording(bytes, name) {
 // and tell the page how it went. Samples with a crop region copy as that
 // region. Resolves with the worker's result, or { error }.
 async function addToKit(sender, ids, kit, create) {
-  const items = [].concat(ids || []).map((id) => ({ id, ...crop.region(id) }));
+  const items = await Promise.all(
+    [].concat(ids || []).map(async (id) => {
+      const reg = crop.region(id);
+      return reg ? { id, ...reg, file: await crop.renderedFile(id) } : { id };
+    })
+  );
   try {
     const res = await library.call('copyToKit', { kit, create: !!create, items });
     if (!sender.isDestroyed()) sender.send('ui:kitDone', { ...res, created: !!create });
@@ -214,7 +235,7 @@ async function trashFiles(sender, files, what) {
     }
   }
   if (!sender.isDestroyed()) {
-    sender.send('ui:flash', n === files.length ? `Moved ${what(n)} to the Trash` : `Moved ${n} of ${files.length} to the Trash`);
+    sender.send('ui:flash', n === files.length ? `Moved ${what(n)} to the ${words.trash}` : `Moved ${n} of ${files.length} to the ${words.trash}`);
   }
 }
 
@@ -229,8 +250,8 @@ async function sampleMenu(sender, ids) {
   const root = realKitsDir();
   const inKits = rows.every((r) => kits.kitOf(root, r.path));
   Menu.buildFromTemplate([
-    // Finder can only be asked to reveal one item; with a multi-selection, the first.
-    { label: 'Show in Finder', accelerator: 'Alt+CmdOrCtrl+R', click: () => shell.showItemInFolder(rows[0].path) },
+    // The file manager can only be asked to reveal one item; with a multi-selection, the first.
+    { label: words.showInFileManager, accelerator: 'Alt+CmdOrCtrl+R', click: () => shell.showItemInFolder(rows[0].path) },
     {
       label: many ? `Copy ${rows.length} Paths` : 'Copy Path',
       click: () => clipboard.writeText(rows.map((r) => r.path).join('\n')),
@@ -309,7 +330,7 @@ function dirMenu(sender, dir) {
   const changed = (method) => () => library.call(method, dir).catch((err) => console.error(`${method} failed:`, err));
   const kit = kits.isKitDir(realKitsDir(), dir) ? path.basename(dir) : null;
   const template = [
-    { label: 'Show in Finder', enabled: fs.existsSync(dir), click: () => shell.openPath(dir) },
+    { label: words.showInFileManager, enabled: fs.existsSync(dir), click: () => shell.openPath(dir) },
     { label: 'Copy Path', click: () => clipboard.writeText(dir) },
     ...(kit
       ? [
@@ -332,11 +353,11 @@ function dirMenu(sender, dir) {
 async function deleteKit(sender, dir) {
   const { response } = await dialog.showMessageBox(win, {
     type: 'warning',
-    buttons: ['Move to Trash', 'Cancel'],
+    buttons: [`Move to ${words.trash}`, 'Cancel'],
     defaultId: 0,
     cancelId: 1,
     message: `Delete the kit “${path.basename(dir)}”?`,
-    detail: 'The kit folder and the copies in it move to the Trash. The original samples are not touched.',
+    detail: `The kit folder and the copies in it move to the ${words.trash}. The original samples are not touched.`,
   });
   if (response !== 0) return;
   try {
@@ -350,24 +371,32 @@ async function deleteKit(sender, dir) {
 // --- window & menu ------------------------------------------------------------
 
 function buildMenu() {
+  // ⌘Q / Ctrl+Q only closes the window: the app keeps running in the menu bar
+  // (the tray on Windows and Linux) with the Quick Search hotkey and folder
+  // watching. ⌥⌘Q quits for real — Ctrl+Shift+Q elsewhere, since Ctrl+Alt is
+  // AltGr on many keyboards (AltGr+Q types @ on a German one).
+  const closeToTray = { label: `Close to ${words.tray}`, accelerator: 'CmdOrCtrl+Q', click: () => win && win.close() };
+  const quitCompletely = { label: `Quit ${app.name} Completely`, accelerator: isMac ? 'Alt+Cmd+Q' : 'Ctrl+Shift+Q', click: () => app.quit() };
   const template = [
-    {
-      label: app.name,
-      submenu: [
-        { role: 'about' },
-        { type: 'separator' },
-        { role: 'services' },
-        { type: 'separator' },
-        { role: 'hide' },
-        { role: 'hideOthers' },
-        { role: 'unhide' },
-        { type: 'separator' },
-        // ⌘Q only closes the window: the app keeps running in the menu bar
-        // (Quick Search hotkey, folder watching). ⌥⌘Q quits for real.
-        { label: 'Close to Menu Bar', accelerator: 'CmdOrCtrl+Q', click: () => win && win.close() },
-        { label: `Quit ${app.name} Completely`, accelerator: 'Alt+CmdOrCtrl+Q', click: () => app.quit() },
-      ],
-    },
+    ...(isMac
+      ? [
+          {
+            label: app.name,
+            submenu: [
+              { role: 'about' },
+              { type: 'separator' },
+              { role: 'services' },
+              { type: 'separator' },
+              { role: 'hide' },
+              { role: 'hideOthers' },
+              { role: 'unhide' },
+              { type: 'separator' },
+              closeToTray,
+              quitCompletely,
+            ],
+          },
+        ]
+      : []),
     {
       label: 'File',
       submenu: [
@@ -386,7 +415,7 @@ function buildMenu() {
         { type: 'separator' },
         { label: 'Edit Tag Rules…', click: () => shell.openPath(RULES_PATH) },
         { type: 'separator' },
-        { role: 'close' },
+        ...(isMac ? [{ role: 'close' }] : [closeToTray, quitCompletely]),
       ],
     },
     {
@@ -401,14 +430,14 @@ function buildMenu() {
         },
         {
           label: 'Redo',
-          accelerator: 'Shift+CmdOrCtrl+Z',
+          accelerator: isMac ? 'Shift+CmdOrCtrl+Z' : 'Ctrl+Y',
           click: (_i, w) => (w === win ? send('ui:undo', true) : w && w.webContents.redo()),
         },
         { type: 'separator' },
         { role: 'cut' },
         { role: 'copy' },
         { role: 'paste' },
-        { role: 'pasteAndMatchStyle' },
+        ...(isMac ? [{ role: 'pasteAndMatchStyle' }] : []),
         { role: 'delete' },
         { role: 'selectAll' },
       ],
@@ -418,6 +447,7 @@ function buildMenu() {
       submenu: [{ role: 'reload' }, { role: 'toggleDevTools' }, { type: 'separator' }, { role: 'togglefullscreen' }],
     },
     { role: 'windowMenu' },
+    ...(isMac ? [] : [{ role: 'help', submenu: [{ role: 'about' }] }]),
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
@@ -467,7 +497,7 @@ function createWindow() {
 // bar ("accessory": no ⌘Tab entry, no Dock icon); while the window is open
 // it's a normal app you can ⌘Tab to.
 function setDockPresence(on) {
-  if (process.platform === 'darwin') app.setActivationPolicy(on ? 'regular' : 'accessory');
+  if (isMac) app.setActivationPolicy(on ? 'regular' : 'accessory');
 }
 
 function openMainWindow() {
@@ -521,9 +551,11 @@ app.whenReady().then(() => {
     connectPage,
   });
   buildMenu();
-  // Opened at login (or SM_START_HIDDEN): start quietly in the menu bar.
-  // Otherwise — launched from Spotlight, Finder, the Dock — show the window.
-  const atLogin = process.platform === 'darwin' && app.getLoginItemSettings().wasOpenedAtLogin;
+  // Opened at login (or SM_START_HIDDEN): start quietly in the menu bar / tray.
+  // Otherwise — launched from Spotlight, Finder, the Dock, the Start menu —
+  // show the window. Windows has no "opened at login" flag, so the login item
+  // passes --hidden (quick.js).
+  const atLogin = isMac ? app.getLoginItemSettings().wasOpenedAtLogin : process.argv.includes(quick.HIDDEN_ARG);
   if (atLogin || process.env.SM_START_HIDDEN) setDockPresence(false);
   else openMainWindow();
 

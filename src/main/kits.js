@@ -1,14 +1,18 @@
 const path = require('path');
 
 // Kits: plain folders of audio files under the app's music folder
-// (~/Music/Sample Manager/Kits/<name>). The pure parts live here — names,
+// (Sample Manager/Kits/<name> in the user's Music folder). The pure parts live here — names,
 // collisions, defaults — so they can be tested without Electron or a library.
 
 const NAME_MAX = 100;
 
-// A name that is safe as a single path component on macOS (and when the kit is
-// copied to other systems): no separators or control characters, no leading
-// dots (hidden files are skipped by the scanner), no trailing dots or spaces.
+// Names Windows reserves for devices, with or without an extension.
+const WIN_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i;
+
+// A name that is safe as a single path component on macOS and Windows (and
+// when the kit is copied to other systems): no separators or control
+// characters, no leading dots (hidden files are skipped by the scanner), no
+// trailing dots or spaces, not a Windows device name ("NUL.wav" → "_NUL.wav").
 // '' if nothing usable is left.
 function safeName(name) {
   const s = String(name == null ? '' : name)
@@ -17,7 +21,8 @@ function safeName(name) {
     .replace(/^[.\s-]+/, '')
     .slice(0, NAME_MAX)
     .replace(/[.\s]+$/, '');
-  return s === '..' ? '' : s;
+  if (s === '..') return '';
+  return WIN_RESERVED.test(s) ? `_${s}` : s;
 }
 
 // "Kick.wav" → "Kick 2.wav", "Kick 3.wav"… until it isn't in `taken` (a Set

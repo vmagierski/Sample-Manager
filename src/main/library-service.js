@@ -96,7 +96,7 @@ function createLibrary({ broadcast, toMain }) {
 
   function loadRules() {
     try {
-      scanner.loadRules(config.rulesPath);
+      scanner.loadRules(config.rulesPath, { appFolder: config.appMusicDir });
       db.ensureTags(scanner.ruleTags()); // rule tags always show, even with no samples yet
     } catch (err) {
       toMain('rulesError', err.message);
@@ -263,8 +263,9 @@ function createLibrary({ broadcast, toMain }) {
 
     // Copy samples into the kit folder `kit` under config.kitsDir (made when
     // `create`; otherwise it must exist), then index the copies right away so
-    // the page can show them. items: [{ id, start?, end? }] — with a region the
-    // copy is that part as a WAV. A sample that can't be copied is reported,
+    // the page can show them. items: [{ id, start?, end?, file? }] — with a
+    // region the copy is that part as a WAV: `file` if main has it rendered
+    // already, else cut here. A sample that can't be copied is reported,
     // not fatal: { kit, dir, copied, failed: [{ name, error }], ids }.
     async copyToKit({ kit, create = false, items }) {
       const name = kits.safeName(kit);
@@ -297,12 +298,14 @@ function createLibrary({ broadcast, toMain }) {
         }
         const crop = item.end > item.start ? [item.start, item.end] : null;
         const file = kits.uniqueName(kits.safeName(crop ? kits.cropFileName(row.path, ...crop) : row.filename) || 'Sound', taken);
-        jobs.push({ row, crop, dest: path.join(dir, file) });
+        jobs.push({ row, crop, rendered: crop && item.file, dest: path.join(dir, file) });
       }
 
       const copyOne = async (job) => {
         try {
-          if (job.crop) {
+          if (job.rendered) {
+            await fs.promises.copyFile(job.rendered, job.dest, fs.constants.COPYFILE_EXCL);
+          } else if (job.crop) {
             try {
               await fs.promises.writeFile(job.dest, await cropToWav(job.row.path, ...job.crop), { flag: 'wx' });
             } catch (err) {

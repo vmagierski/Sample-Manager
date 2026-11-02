@@ -1,8 +1,8 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execFile } = require('child_process');
 const convcache = require('./convcache');
+const convert = require('./convert');
 
 // Chromium's decoder (used by the renderer's Web Audio player) can't read
 // AIFF, which is common in Logic libraries. Rewrap AIFF/AIFC PCM as WAV.
@@ -131,7 +131,8 @@ function aiffToWav(buf) {
 }
 
 // CAF (Apple Loops: usually AAC, sometimes ALAC/PCM) isn't a container
-// Chromium can open. macOS's afconvert handles every CAF codec, ~35ms/loop.
+// Chromium can open. convert.js decodes it (afconvert on macOS, ~35ms/loop;
+// ffmpeg elsewhere).
 // Converted once to 32-bit float — AAC can decode above 0 dBFS, which
 // integer PCM would clip — and kept in the conversion cache (convcache.js).
 // Crops of a CAF are cut from the same file, so what you hear is what you drag.
@@ -143,7 +144,7 @@ async function cafToWav(filePath, signal) {
   if (hit) return fs.promises.readFile(hit, { signal });
   const out = convcache.enabled() ? convcache.tempFor(key) : path.join(os.tmpdir(), `sm-caf-${process.pid}-${++tmpSeq}.wav`);
   try {
-    await afconvert(['-f', 'WAVE', '-d', 'LEF32', filePath, out], signal);
+    await convert.toWav(filePath, out, 'f32', signal);
     if (convcache.enabled()) return await fs.promises.readFile(convcache.commit(key, out), { signal });
     return await fs.promises.readFile(out, { signal });
   } finally {
@@ -211,16 +212,9 @@ function sliceWav(buf, startSec, endSec) {
   return Buffer.concat([head, body]);
 }
 
-function afconvert(args, signal) {
-  return new Promise((resolve, reject) => {
-    execFile('/usr/bin/afconvert', args, { signal }, (err, _o, stderr) =>
-      err ? reject(err.name === 'AbortError' ? err : new Error(`afconvert failed: ${stderr || err.message}`)) : resolve());
-  });
-}
-
 // Any supported sample as WAV at its original sample rate: WAV as-is, AIFF
 // rewrapped losslessly, everything else (CAF, MP3, M4A, FLAC) decoded by
-// macOS to 24-bit PCM.
+// convert.js to 24-bit PCM.
 async function toWav(filePath) {
   const ext = path.extname(filePath).slice(1).toLowerCase();
   if (ext === 'wav' || ext === 'wave') return fs.promises.readFile(filePath);
@@ -228,7 +222,7 @@ async function toWav(filePath) {
   if (ext === 'caf') return cafToWav(filePath);
   const out = path.join(os.tmpdir(), `sm-crop-${process.pid}-${++tmpSeq}.wav`);
   try {
-    await afconvert(['-f', 'WAVE', '-d', 'LEI24', filePath, out]);
+    await convert.toWav(filePath, out, 's24');
     return await fs.promises.readFile(out);
   } finally {
     fs.promises.unlink(out).catch(() => {});

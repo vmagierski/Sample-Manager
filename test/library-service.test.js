@@ -124,7 +124,9 @@ test('indexNow, renderCrop, hide / unhide', async () => {
   assert.strictEqual((await lib.windows.listSamples({}, ctx(1))).rows.length, 3);
 });
 
-test('unreadable folders: privacy errors go to main for a dialog', async () => {
+// chmod 000 doesn't stop root, and does nothing on Windows.
+const canLock = process.platform !== 'win32' && process.getuid?.() !== 0;
+test('unreadable folders: privacy errors go to main for a dialog', { skip: !canLock && 'chmod 000 has no effect here' }, async () => {
   const locked = path.join(dir, 'Locked');
   fs.mkdirSync(locked);
   await lib.main.addFolderPath(locked);
