@@ -27,6 +27,24 @@ function expandFolder(folder, { appFolder, home = os.homedir() } = {}) {
   return path.resolve(f);
 }
 
+// Library paths are canonical realpaths, so a rule's folder must be too —
+// even before it exists (Recordings on a first launch): the real path of its
+// nearest existing ancestor, plus the rest.
+function realish(abs) {
+  let dir = abs;
+  const rest = [];
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync(dir), ...rest);
+    } catch {
+      const up = path.dirname(dir);
+      if (up === dir) return abs;
+      rest.unshift(path.basename(dir));
+      dir = up;
+    }
+  }
+}
+
 function loadRules(file, opts = {}) {
   const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
   const list = Array.isArray(raw) ? raw : raw.rules;
@@ -40,11 +58,7 @@ function loadRules(file, opts = {}) {
         compiled.push({ tag, folder: null }); // its tag still shows, with no samples
         continue;
       }
-      let real = abs;
-      try {
-        real = fs.realpathSync(abs); // library paths are canonical realpaths
-      } catch {}
-      compiled.push({ tag, folder: real });
+      compiled.push({ tag, folder: realish(abs) });
       continue;
     }
     try {

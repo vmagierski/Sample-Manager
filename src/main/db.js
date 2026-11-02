@@ -103,9 +103,14 @@ INSERT INTO dir_counts SELECT folder_id, sm_dirname(path), count(*) FROM samples
 `;
 
 // One sample's search row (see SEARCH_SCHEMA), for the samples matching WHERE.
+// Its path below the folder is indexed with '/' between folders on every
+// platform, so "drums/kick" finds the same thing on Windows (searchTerms
+// reads a typed '\\' as '/' there).
+const searchRel = () =>
+  path.sep === '/' ? 'substr(s.path, length(f.path) + 2)' : `replace(substr(s.path, length(f.path) + 2), '${path.sep}', '/')`;
 const searchRows = (where) => `
   INSERT INTO sample_search (rowid, rel, tags)
-  SELECT s.id, substr(s.path, length(f.path) + 2) || char(10, 10),
+  SELECT s.id, ${searchRel()} || char(10, 10),
          coalesce((SELECT group_concat(t.name, char(10)) FROM sample_tags st JOIN tags t ON t.id = st.tag_id
                    WHERE st.sample_id = s.id), '') || char(10, 10)
   FROM samples s JOIN folders f ON f.id = s.folder_id ${where}`;
@@ -780,6 +785,13 @@ function after(s) {
 // Search index query for "every term is in the path or a tag". A term of 3+
 // characters is the phrase of its trigrams; a shorter one, any trigram that
 // starts with it (from the index's vocabulary). Null if a term matches nothing.
+// A search's words, lower-cased; a typed path separator counts as '/', the
+// one the search index uses (see searchRows).
+function searchTerms(search) {
+  const s = String(search || '').toLowerCase();
+  return (DIR_SEP === '/' ? s : s.split(DIR_SEP).join('/')).split(/\s+/).filter(Boolean);
+}
+
 function searchMatch(terms) {
   const parts = [];
   for (const t of terms) {
@@ -911,7 +923,7 @@ function libraryTotal() {
 // → { ids: Int32Array in view order, total }
 function listIds(filter = {}) {
   const dirs = [...new Set([].concat(filter.dirs || [], filter.dir || []))];
-  const terms = String(filter.search || '').toLowerCase().split(/\s+/).filter(Boolean);
+  const terms = searchTerms(filter.search);
   const hidden = hiddenFor(dirs);
   const rank = !!filter.rank && terms.length > 0;
   const matched = matchIds(filter, dirs, terms, rank);

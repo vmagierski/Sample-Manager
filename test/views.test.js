@@ -5,6 +5,13 @@ const os = require('os');
 const path = require('path');
 const Database = require('better-sqlite3');
 const db = require('../src/main/db');
+const { P } = require('./native');
+
+// Path separator, and the character after it (prefix ranges end there).
+const SEP = path.sep;
+const END = String.fromCharCode(SEP.charCodeAt(0) + 1);
+// Path below the folder as the search index sees it: '/' between folders.
+const REL = SEP === '/' ? 'substr(s.path, length(f.path) + 2)' : `replace(substr(s.path, length(f.path) + 2), '${SEP}', '/')`;
 
 // The search index, stored counts and id-list views, checked against the
 // plain-SQL versions they replaced (a full scan with LIKE, counted live).
@@ -26,14 +33,14 @@ function oldIds(filter = {}) {
   const where = [];
   const params = [];
   const dirs = [...new Set(filter.dirs || [])];
-  const browsing = (h) => dirs.some((d) => d === h || d.startsWith(h + '/'));
+  const browsing = (h) => dirs.some((d) => d === h || d.startsWith(h + SEP));
   for (const h of db.listHidden().filter((h) => !browsing(h))) {
     where.push('NOT (s.path >= ? AND s.path < ?)');
-    params.push(h + '/', h + '0');
+    params.push(h + SEP, h + END);
   }
   if (dirs.length) {
     where.push(`(${dirs.map(() => '(s.path >= ? AND s.path < ?)').join(' OR ')})`);
-    for (const d of dirs) params.push(d + '/', d + '0');
+    for (const d of dirs) params.push(d + SEP, d + END);
   }
   const tags = [...new Set(filter.tags || [])];
   if (tags.length) {
@@ -43,9 +50,9 @@ function oldIds(filter = {}) {
   }
   if (filter.untagged) where.push('NOT EXISTS (SELECT 1 FROM sample_tags st WHERE st.sample_id = s.id)');
   const terms = String(filter.search || '').toLowerCase().split(/\s+/).filter(Boolean);
-  for (const term of terms) {
+  for (const term of terms.map((t) => t.split(SEP).join('/'))) {
     const like = `%${escapeLike(term)}%`;
-    where.push(`(substr(s.path, length(f.path) + 2) LIKE ? ESCAPE '\\'
+    where.push(`(${REL} LIKE ? ESCAPE '\\'
                  OR EXISTS (SELECT 1 FROM sample_tags st JOIN tags t ON t.id = st.tag_id
                             WHERE st.sample_id = s.id AND t.name LIKE ? ESCAPE '\\'))`);
     params.push(like, like);
@@ -84,14 +91,14 @@ function build() {
     seed = (seed * 16807) % 2147483647;
     return seed % n;
   };
-  const folder = db.addFolder('/lib', 'lib');
+  const folder = db.addFolder(P('/lib'), 'lib');
   const files = [];
   for (let i = 0; i < 400; i++) {
     const words = Array.from({ length: 1 + rnd(3) }, () => WORDS[rnd(WORDS.length)]);
     const ext = ['wav', 'aif', 'caf'][rnd(3)];
-    files.push({ path: `/lib/${DIRS[rnd(DIRS.length)]}/${words.join(rnd(2) ? ' ' : '_')} ${i}.${ext}`, size: i, mtime: 1 });
+    files.push({ path: P(`/lib/${DIRS[rnd(DIRS.length)]}/${words.join(rnd(2) ? ' ' : '_')} ${i}.${ext}`), size: i, mtime: 1 });
   }
-  files.push({ path: '/lib/Misc/white noise.wav', size: 1, mtime: 1 }, { path: '/lib/Misc/White Noise.aif', size: 1, mtime: 1 });
+  files.push({ path: P('/lib/Misc/white noise.wav'), size: 1, mtime: 1 }, { path: P('/lib/Misc/White Noise.aif'), size: 1, mtime: 1 });
   const tagsFor = (p) => {
     const out = [];
     if (/kick/i.test(p)) out.push('kick');
@@ -128,10 +135,10 @@ const FILTERS = [
   { tags: ['kick', 'loop'] },
   { tags: ['kick', 'nope'] },
   { untagged: true },
-  { dirs: ['/lib/Drums'] },
-  { dirs: ['/lib/Drums', '/lib/Drums/Kicks'] },
-  { dirs: ['/lib/Misc'], search: 'fx', rank: true },
-  { dirs: ['/lib/Pads'], tags: ['pad'], search: 'dark', rank: true },
+  { dirs: [P('/lib/Drums')] },
+  { dirs: [P('/lib/Drums'), P('/lib/Drums/Kicks')] },
+  { dirs: [P('/lib/Misc')], search: 'fx', rank: true },
+  { dirs: [P('/lib/Pads')], tags: ['pad'], search: 'dark', rank: true },
 ];
 
 function same(label) {
@@ -143,7 +150,7 @@ function same(label) {
 // Stored counts vs counted live.
 function countsMatch(label) {
   const hidden = db.listHidden();
-  const notHidden = (col) => hidden.map((h) => `NOT (${col} >= '${h}/' AND ${col} < '${h}0')`).join(' AND ') || '1';
+  const notHidden = (col) => hidden.map((h) => `NOT (${col} >= '${h}${SEP}' AND ${col} < '${h}${END}')`).join(' AND ') || '1';
   const live = ref
     .prepare(`SELECT t.name, (SELECT count(*) FROM sample_tags st JOIN samples s ON s.id = st.sample_id
                               WHERE st.tag_id = t.id AND ${notHidden('s.path')}) AS count FROM tags t ORDER BY t.name`)
@@ -156,7 +163,7 @@ function countsMatch(label) {
   assert.strictEqual(db.listIds({}).total, ref.prepare(`SELECT count(*) FROM samples WHERE ${notHidden('path')}`).pluck().get(), `${label}: total`);
   const dirs = new Map();
   for (const { path: p, folderId } of ref.prepare('SELECT path, folder_id AS folderId FROM samples').all()) {
-    const key = `${folderId}|${p.slice(0, p.lastIndexOf('/'))}`;
+    const key = `${folderId}|${p.slice(0, p.lastIndexOf(SEP))}`;
     dirs.set(key, (dirs.get(key) || 0) + 1);
   }
   const stored = new Map(db.listDirs().dirs.map((d) => [`${d.folderId}|${d.dir}`, d.n]));
@@ -181,7 +188,7 @@ test('views match the old full-scan query, through every kind of change', () => 
 
   // Rename / move (the watcher's path): old name gone, new one found.
   const row = db.getById(some[2]);
-  db.movePath(row.path, '/lib/Vocals/Renamed Thing.wav', folder.id, []);
+  db.movePath(row.path, P('/lib/Vocals/Renamed Thing.wav'), folder.id, []);
   same('rename');
   countsMatch('rename');
   assert.deepStrictEqual(Array.from(db.listIds({ search: 'renamed' }).ids), [some[2]]);
@@ -199,22 +206,22 @@ test('views match the old full-scan query, through every kind of change', () => 
   assert.strictEqual(db.listIds({ search: 'snare' }).ids.length, oldIds({ search: 'snare' }).length);
 
   // Hidden folders: left out, unless browsed.
-  db.hideDir('/lib/Drums');
-  db.hideDir('/lib/Drums/Kicks'); // inside another hidden one
+  db.hideDir(P('/lib/Drums'));
+  db.hideDir(P('/lib/Drums/Kicks')); // inside another hidden one
   same('hidden');
   countsMatch('hidden');
-  db.unhideDir('/lib/Drums/Kicks');
-  db.unhideDir('/lib/Drums');
+  db.unhideDir(P('/lib/Drums/Kicks'));
+  db.unhideDir(P('/lib/Drums'));
 
   // Files removed, a directory removed, files added.
   db.removePath(files[0].path);
-  db.removeDir('/lib/FX');
-  db.upsertFile(folder.id, { path: '/lib/New/kick fresh.wav', size: 1, mtime: 1 }, ['kick']);
+  db.removeDir(P('/lib/FX'));
+  db.upsertFile(folder.id, { path: P('/lib/New/kick fresh.wav'), size: 1, mtime: 1 }, ['kick']);
   same('add / remove');
   countsMatch('add / remove');
 
   // A parent folder absorbing this one: paths below the folder change.
-  const parent = db.addFolder('/', 'root');
+  const parent = db.addFolder(P('/'), 'root');
   const all = ref.prepare('SELECT path, size_bytes AS size, date_modified AS mtime FROM samples').all();
   db.syncFolder(parent.id, all, () => []);
   db.removeFolder(folder.id);
@@ -232,9 +239,9 @@ test('views match the old full-scan query, through every kind of change', () => 
 });
 
 test('rows: by id, in the order asked, gone ids left out', () => {
-  const f = db.addFolder('/r', 'r');
-  db.syncFolder(f.id, ['b.wav', 'a.wav', 'c.wav'].map((n) => ({ path: `/r/${n}`, size: 1, mtime: 1 })), (p) => (p.endsWith('a.wav') ? ['x'] : []));
-  const ids = Array.from(db.listIds({ dirs: ['/r'] }).ids);
+  const f = db.addFolder(P('/r'), 'r');
+  db.syncFolder(f.id, ['b.wav', 'a.wav', 'c.wav'].map((n) => ({ path: P(`/r/${n}`), size: 1, mtime: 1 })), (p) => (p.endsWith('a.wav') ? ['x'] : []));
+  const ids = Array.from(db.listIds({ dirs: [P('/r')] }).ids);
   const rows = db.getRows([ids[2], 999999, ids[0]]);
   assert.deepStrictEqual(rows.map((r) => r.filename), ['c.wav', 'a.wav']);
   assert.deepStrictEqual(rows[1].tags, ['x']);
@@ -254,8 +261,8 @@ test('an existing library gets the index, counts and name order when upgraded', 
     CREATE TABLE sample_tags (sample_id INTEGER NOT NULL, tag_id INTEGER NOT NULL, source TEXT NOT NULL, PRIMARY KEY (sample_id, tag_id));
     CREATE INDEX idx_sample_tags_tag ON sample_tags(tag_id);
     CREATE TABLE hidden_dirs (path TEXT PRIMARY KEY);
-    INSERT INTO folders VALUES (1, '/o', 'o', NULL);
-    INSERT INTO samples (id, path, filename, folder_id) VALUES (1, '/o/a/Kick 1.wav', 'Kick 1.wav', 1), (2, '/o/b/pad.wav', 'pad.wav', 1), (3, '/o/b/fx.wav', 'fx.wav', 1);
+    INSERT INTO folders VALUES (1, '${P('/o')}', 'o', NULL);
+    INSERT INTO samples (id, path, filename, folder_id) VALUES (1, '${P('/o/a/Kick 1.wav')}', 'Kick 1.wav', 1), (2, '${P('/o/b/pad.wav')}', 'pad.wav', 1), (3, '${P('/o/b/fx.wav')}', 'fx.wav', 1);
     INSERT INTO tags VALUES (1, 'kick'), (2, 'unused');
     INSERT INTO sample_tags VALUES (1, 1, 'auto');
     PRAGMA user_version = 1;`);
@@ -263,7 +270,7 @@ test('an existing library gets the index, counts and name order when upgraded', 
   db.close();
   db.open(old);
   assert.deepStrictEqual(db.listTags(), { tags: [{ name: 'kick', count: 1 }, { name: 'unused', count: 0 }], untagged: 2 });
-  assert.deepStrictEqual(db.listDirs().dirs.map((d) => [d.dir, d.n]).sort(), [['/o/a', 1], ['/o/b', 2]]);
+  assert.deepStrictEqual(db.listDirs().dirs.map((d) => [d.dir, d.n]).sort(), [[P('/o/a'), 1], [P('/o/b'), 2]]);
   assert.deepStrictEqual(db.listSamples({ search: 'kick' }).rows.map((r) => r.filename), ['Kick 1.wav']);
   assert.deepStrictEqual(db.listSamples({ search: 'fx' }).rows.map((r) => r.filename), ['fx.wav']);
   assert.deepStrictEqual(db.listSamples({}).rows.map((r) => r.filename), ['fx.wav', 'Kick 1.wav', 'pad.wav']);
@@ -272,11 +279,11 @@ test('an existing library gets the index, counts and name order when upgraded', 
   db.close();
   const back = new Database(old);
   back.exec(`PRAGMA user_version = 1;
-    INSERT INTO samples (path, filename, folder_id) VALUES ('/o/c/Snare new.wav', 'Snare new.wav', 1);`);
+    INSERT INTO samples (path, filename, folder_id) VALUES ('${P('/o/c/Snare new.wav')}', 'Snare new.wav', 1);`);
   back.close();
   db.open(old);
   assert.deepStrictEqual(db.listSamples({ search: 'snare' }).rows.map((r) => r.filename), ['Snare new.wav']);
-  assert.deepStrictEqual(db.listDirs().dirs.map((d) => [d.dir, d.n]).sort(), [['/o/a', 1], ['/o/b', 2], ['/o/c', 1]]);
+  assert.deepStrictEqual(db.listDirs().dirs.map((d) => [d.dir, d.n]).sort(), [[P('/o/a'), 1], [P('/o/b'), 2], [P('/o/c'), 1]]);
   assert.strictEqual(db.listTags().untagged, 3);
   db.close();
   db.open(file);

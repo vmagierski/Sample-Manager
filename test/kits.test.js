@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const kits = require('../src/main/kits');
+const { P } = require('./native');
 const { createLibrary } = require('../src/main/library-service');
 
 test('safeName: one path component, nothing hidden or odd', () => {
@@ -45,13 +46,13 @@ test('defaultKitName: shared folder, else shared tag, else Kit N; never a taken 
 });
 
 test('kitOf / isKitDir', () => {
-  assert.strictEqual(kits.kitOf('/k', '/k/A/x.wav'), '/k/A');
-  assert.strictEqual(kits.kitOf('/k', '/k/A'), '/k/A');
-  assert.strictEqual(kits.kitOf('/k', '/k'), null);
-  assert.strictEqual(kits.kitOf('/k', '/other/A/x.wav'), null);
-  assert.strictEqual(kits.kitOf('/k', '/k/../x'), null);
-  assert.strictEqual(kits.isKitDir('/k', '/k/A'), true);
-  assert.strictEqual(kits.isKitDir('/k', '/k/A/B'), false);
+  assert.strictEqual(kits.kitOf(P('/k'), P('/k/A/x.wav')), P('/k/A'));
+  assert.strictEqual(kits.kitOf(P('/k'), P('/k/A')), P('/k/A'));
+  assert.strictEqual(kits.kitOf(P('/k'), P('/k')), null);
+  assert.strictEqual(kits.kitOf(P('/k'), P('/other/A/x.wav')), null);
+  assert.strictEqual(kits.kitOf(P('/k'), P('/k/../x')), null);
+  assert.strictEqual(kits.isKitDir(P('/k'), P('/k/A')), true);
+  assert.strictEqual(kits.isKitDir(P('/k'), P('/k/A/B')), false);
 });
 
 // --- service level: copying into a kit, in a temp library ---------------------
@@ -102,7 +103,7 @@ test('copy into a new kit: files, collisions, crops, indexed right away', async 
   lib.main.init({ dbFile: path.join(dir, 'library.db'), rulesPath: path.join(dir, 'rules.json'), kitsDir });
   await lib.main.addFolderPath(samples);
   const rows = (await lib.windows.listSamples({}, ctx)).rows;
-  const id = (rel) => rows.find((r) => r.path.endsWith(rel)).id;
+  const id = (rel) => rows.find((r) => r.path.endsWith(P(rel))).id;
   assert.deepStrictEqual(await lib.windows.listKits(ctx), []);
   assert.strictEqual(await lib.windows.suggestKitName([id('A/Kick.wav'), id('A/Snare.wav')], ctx), 'A');
   assert.strictEqual(await lib.windows.suggestKitName([id('A/Kick.wav'), id('B/Kick.wav')], ctx), 'Kick');

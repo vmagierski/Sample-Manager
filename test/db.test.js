@@ -4,13 +4,14 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const db = require('../src/main/db');
+const { P } = require('./native');
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sm-test-'));
 db.open(path.join(dir, 'lib.db'));
 test.after(() => { db.close(); fs.rmSync(dir, { recursive: true, force: true }); });
 
-const root = '/lib';
-const f = (name, size = 100) => ({ path: `${root}/${name}`, size, mtime: 1 });
+const root = P('/lib');
+const f = (name, size = 100) => ({ path: P(`${root}/${name}`), size, mtime: 1 });
 const byName = (res) => Object.fromEntries(res.rows.map((r) => [r.filename, r.tags]));
 const tagger = (p) => (/kick/i.test(p) ? ['kick'] : /snare/i.test(p) ? ['snare'] : []);
 
@@ -55,14 +56,14 @@ test('sync, filter, manual tags survive rescan', () => {
 
 test('watcher-style move keeps tags; removeDir; folder removal', () => {
   const folder = db.listFolders()[0];
-  db.movePath('/lib/Weird.wav', '/lib/Sub/Renamed.wav', folder.id, []);
-  const moved = db.getByPath('/lib/Sub/Renamed.wav');
+  db.movePath(P('/lib/Weird.wav'), P('/lib/Sub/Renamed.wav'), folder.id, []);
+  const moved = db.getByPath(P('/lib/Sub/Renamed.wav'));
   assert.ok(moved);
   assert.deepStrictEqual(db.listSamples({ search: 'renamed' }).rows[0].tags, ['dark', 'riser']);
   assert.strictEqual(db.listSamples({ search: 'sub' }).rows.length, 1); // folder path searchable
 
-  db.removeDir('/lib/Sub');
-  assert.strictEqual(db.getByPath('/lib/Sub/Renamed.wav'), undefined);
+  db.removeDir(P('/lib/Sub'));
+  assert.strictEqual(db.getByPath(P('/lib/Sub/Renamed.wav')), undefined);
 
   db.removeFolder(folder.id);
   assert.strictEqual(db.listSamples().total, 0);
@@ -70,107 +71,107 @@ test('watcher-style move keeps tags; removeDir; folder removal', () => {
 });
 
 test('parent folder absorbs child and keeps its tags', () => {
-  const child = db.addFolder('/p/child', 'child');
-  db.syncFolder(child.id, [{ path: '/p/child/a.wav', size: 1, mtime: 1 }], () => []);
-  const a = db.getByPath('/p/child/a.wav');
+  const child = db.addFolder(P('/p/child'), 'child');
+  db.syncFolder(child.id, [{ path: P('/p/child/a.wav'), size: 1, mtime: 1 }], () => []);
+  const a = db.getByPath(P('/p/child/a.wav'));
   db.setTags(a.id, ['keep']);
-  const parent = db.addFolder('/p', 'p');
-  db.syncFolder(parent.id, [{ path: '/p/child/a.wav', size: 1, mtime: 1 }], () => []);
+  const parent = db.addFolder(P('/p'), 'p');
+  db.syncFolder(parent.id, [{ path: P('/p/child/a.wav'), size: 1, mtime: 1 }], () => []);
   db.removeFolder(child.id);
   const row = db.listSamples().rows[0];
   assert.strictEqual(row.folderId, parent.id);
   assert.deepStrictEqual(row.tags, ['keep']);
-  assert.strictEqual(row.relPath, 'child/a.wav');
+  assert.strictEqual(row.relPath, P('child/a.wav'));
 });
 
 test('hidden folders drop out of lists, totals and tag counts, except when browsed', () => {
-  const f = db.addFolder('/h', 'h');
+  const f = db.addFolder(P('/h'), 'h');
   db.syncFolder(f.id, [
-    { path: '/h/keep/Kick.wav', size: 1, mtime: 1 },
-    { path: '/h/junk/Kick 2.wav', size: 1, mtime: 1 },
-    { path: '/h/junk/deep/Kick 3.wav', size: 1, mtime: 1 },
-    { path: '/h/junker/Kick 4.wav', size: 1, mtime: 1 }, // shares a prefix, must stay visible
+    { path: P('/h/keep/Kick.wav'), size: 1, mtime: 1 },
+    { path: P('/h/junk/Kick 2.wav'), size: 1, mtime: 1 },
+    { path: P('/h/junk/deep/Kick 3.wav'), size: 1, mtime: 1 },
+    { path: P('/h/junker/Kick 4.wav'), size: 1, mtime: 1 }, // shares a prefix, must stay visible
   ], (p) => (/kick/i.test(p) ? ['kick'] : []));
   const names = (flt) => db.listSamples(flt).rows.map((r) => r.filename).filter((n) => n.startsWith('Kick')).sort();
   const before = db.listSamples().total;
 
-  db.hideDir('/h/junk');
+  db.hideDir(P('/h/junk'));
   assert.deepStrictEqual(names({}), ['Kick 4.wav', 'Kick.wav']);
   assert.strictEqual(db.listSamples().total, before - 2);
   assert.strictEqual(db.listTags().tags.find((t) => t.name === 'kick').count, 2);
   assert.deepStrictEqual(names({ search: 'kick' }), ['Kick 4.wav', 'Kick.wav']);
   // Browsing the hidden folder (or inside it) shows its contents.
-  assert.deepStrictEqual(names({ dir: '/h/junk' }), ['Kick 2.wav', 'Kick 3.wav']);
-  assert.deepStrictEqual(names({ dir: '/h/junk/deep' }), ['Kick 3.wav']);
+  assert.deepStrictEqual(names({ dir: P('/h/junk') }), ['Kick 2.wav', 'Kick 3.wav']);
+  assert.deepStrictEqual(names({ dir: P('/h/junk/deep') }), ['Kick 3.wav']);
 
-  db.unhideDir('/h/junk');
+  db.unhideDir(P('/h/junk'));
   assert.strictEqual(db.listSamples().total, before);
-  db.hideDir('/h/junk');
+  db.hideDir(P('/h/junk'));
   db.removeFolder(f.id);
   assert.deepStrictEqual(db.listHidden(), []); // removing a folder forgets its hidden subfolders
 });
 
 test('multiple folders are ORed, and search stays inside them', () => {
-  const f = db.addFolder('/m', 'm');
-  db.syncFolder(f.id, ['a/Kick.wav', 'b/Kick.wav', 'c/Kick.wav', 'a/Snare.wav'].map((p) => ({ path: `/m/${p}`, size: 1, mtime: 1 })), () => []);
+  const f = db.addFolder(P('/m'), 'm');
+  db.syncFolder(f.id, [P('a/Kick.wav'), P('b/Kick.wav'), P('c/Kick.wav'), P('a/Snare.wav')].map((p) => ({ path: P(`/m/${p}`), size: 1, mtime: 1 })), () => []);
   const got = (flt) => db.listSamples(flt).rows.map((r) => r.relPath).sort();
-  assert.deepStrictEqual(got({ dirs: ['/m/a', '/m/b'] }), ['a/Kick.wav', 'a/Snare.wav', 'b/Kick.wav']);
-  assert.deepStrictEqual(got({ dirs: ['/m/a', '/m/b'], search: 'kick' }), ['a/Kick.wav', 'b/Kick.wav']);
-  assert.deepStrictEqual(got({ dirs: ['/m', '/m/a'] }).length, 4); // overlapping selection
-  db.hideDir('/m/b');
-  assert.deepStrictEqual(got({ dirs: ['/m/a', '/m/b'] }), ['a/Kick.wav', 'a/Snare.wav', 'b/Kick.wav']); // selected hidden folder still shows
-  assert.deepStrictEqual(got({ dirs: ['/m'] }), ['a/Kick.wav', 'a/Snare.wav', 'c/Kick.wav']);
+  assert.deepStrictEqual(got({ dirs: [P('/m/a'), P('/m/b')] }), [P('a/Kick.wav'), P('a/Snare.wav'), P('b/Kick.wav')]);
+  assert.deepStrictEqual(got({ dirs: [P('/m/a'), P('/m/b')], search: 'kick' }), [P('a/Kick.wav'), P('b/Kick.wav')]);
+  assert.deepStrictEqual(got({ dirs: [P('/m'), P('/m/a')] }).length, 4); // overlapping selection
+  db.hideDir(P('/m/b'));
+  assert.deepStrictEqual(got({ dirs: [P('/m/a'), P('/m/b')] }), [P('a/Kick.wav'), P('a/Snare.wav'), P('b/Kick.wav')]); // selected hidden folder still shows
+  assert.deepStrictEqual(got({ dirs: [P('/m')] }), [P('a/Kick.wav'), P('a/Snare.wav'), P('c/Kick.wav')]);
   db.removeFolder(f.id);
 });
 
 test('rank + limit: file-name matches first, capped', () => {
-  const f = db.addFolder('/r', 'r');
-  db.syncFolder(f.id, ['Kick Loops/Groove.wav', 'Kick Loops/Big Kick.wav', 'Misc/Kick.wav', 'Misc/Kicker Long Name.wav'].map((p) => ({ path: `/r/${p}`, size: 1, mtime: 1 })), () => []);
-  const got = db.listSamples({ dirs: ['/r'], search: 'kick', rank: true }).rows.map((r) => r.filename);
+  const f = db.addFolder(P('/r'), 'r');
+  db.syncFolder(f.id, [P('Kick Loops/Groove.wav'), P('Kick Loops/Big Kick.wav'), P('Misc/Kick.wav'), P('Misc/Kicker Long Name.wav')].map((p) => ({ path: P(`/r/${p}`), size: 1, mtime: 1 })), () => []);
+  const got = db.listSamples({ dirs: [P('/r')], search: 'kick', rank: true }).rows.map((r) => r.filename);
   assert.deepStrictEqual(got, ['Kick.wav', 'Big Kick.wav', 'Kicker Long Name.wav', 'Groove.wav']); // name hits (shortest first), then folder-only
-  assert.strictEqual(db.listSamples({ dirs: ['/r'], search: 'kick', rank: true, limit: 2 }).rows.length, 2);
-  assert.strictEqual(db.listSamples({ dirs: ['/r'], limit: 3 }).rows.length, 3);
+  assert.strictEqual(db.listSamples({ dirs: [P('/r')], search: 'kick', rank: true, limit: 2 }).rows.length, 2);
+  assert.strictEqual(db.listSamples({ dirs: [P('/r')], limit: 3 }).rows.length, 3);
   db.removeFolder(f.id);
 });
 
 test('rank: exact name, then phrase, then scattered words', () => {
-  const f = db.addFolder('/w', 'w');
-  const names = ['Clap White Noise.wav', 'Noise Burst White.wav', 'white noise.wav', 'Noise/White noise.aif', 'Whitenoise Sweep.wav'];
-  db.syncFolder(f.id, names.map((p) => ({ path: `/w/${p}`, size: 1, mtime: 1 })), () => []);
-  const got = db.listSamples({ dirs: ['/w'], search: 'white noise', rank: true }).rows.map((r) => r.relPath);
-  assert.deepStrictEqual(got.slice(0, 2).sort(), ['Noise/White noise.aif', 'white noise.wav']); // exact names (any extension)
+  const f = db.addFolder(P('/w'), 'w');
+  const names = ['Clap White Noise.wav', 'Noise Burst White.wav', 'white noise.wav', P('Noise/White noise.aif'), 'Whitenoise Sweep.wav'];
+  db.syncFolder(f.id, names.map((p) => ({ path: P(`/w/${p}`), size: 1, mtime: 1 })), () => []);
+  const got = db.listSamples({ dirs: [P('/w')], search: 'white noise', rank: true }).rows.map((r) => r.relPath);
+  assert.deepStrictEqual(got.slice(0, 2).sort(), [P('Noise/White noise.aif'), 'white noise.wav']); // exact names (any extension)
   assert.deepStrictEqual(got.slice(2), ['Clap White Noise.wav', 'Noise Burst White.wav', 'Whitenoise Sweep.wav']); // phrase, then words
   db.removeFolder(f.id);
 });
 
 test('folder ranges: only paths below the folder, not siblings sharing its prefix', () => {
-  const f = db.addFolder('/g', 'g');
-  const names = ['dir/a.wav', 'dir/sub/b.wav', 'dir0/c.wav', 'dir-x/d.wav', 'dir.wav', 'di/e.wav'];
-  db.syncFolder(f.id, names.map((p) => ({ path: `/g/${p}`, size: 1, mtime: 1 })), () => []);
+  const f = db.addFolder(P('/g'), 'g');
+  const names = [P('dir/a.wav'), P('dir/sub/b.wav'), P('dir0/c.wav'), P('dir-x/d.wav'), 'dir.wav', P('di/e.wav')];
+  db.syncFolder(f.id, names.map((p) => ({ path: P(`/g/${p}`), size: 1, mtime: 1 })), () => []);
   const got = (flt) => db.listSamples(flt).rows.map((r) => r.relPath).sort();
   const total = db.listSamples().total;
   const untagged = db.listTags().untagged;
-  assert.deepStrictEqual(got({ dirs: ['/g/dir'] }), ['dir/a.wav', 'dir/sub/b.wav']);
-  assert.deepStrictEqual(got({ dirs: ['/g/dir0'] }), ['dir0/c.wav']);
-  db.hideDir('/g/dir');
-  assert.deepStrictEqual(got({ dirs: ['/g'] }), ['di/e.wav', 'dir-x/d.wav', 'dir.wav', 'dir0/c.wav']);
+  assert.deepStrictEqual(got({ dirs: [P('/g/dir')] }), [P('dir/a.wav'), P('dir/sub/b.wav')]);
+  assert.deepStrictEqual(got({ dirs: [P('/g/dir0')] }), [P('dir0/c.wav')]);
+  db.hideDir(P('/g/dir'));
+  assert.deepStrictEqual(got({ dirs: [P('/g')] }), [P('di/e.wav'), P('dir-x/d.wav'), 'dir.wav', P('dir0/c.wav')]);
   assert.strictEqual(db.listSamples().total, total - 2);
-  db.hideDir('/g/dir/sub'); // inside a hidden folder: not subtracted twice
+  db.hideDir(P('/g/dir/sub')); // inside a hidden folder: not subtracted twice
   assert.strictEqual(db.listSamples().total, total - 2);
   assert.strictEqual(db.listTags().untagged, untagged - 2);
-  assert.deepStrictEqual(got({ dirs: ['/g/dir/sub'] }), ['dir/sub/b.wav']); // browsing a hidden folder shows it
-  db.removeDir('/g/dir');
-  assert.deepStrictEqual(got({ dirs: ['/g'] }), ['di/e.wav', 'dir-x/d.wav', 'dir.wav', 'dir0/c.wav']);
+  assert.deepStrictEqual(got({ dirs: [P('/g/dir/sub')] }), [P('dir/sub/b.wav')]); // browsing a hidden folder shows it
+  db.removeDir(P('/g/dir'));
+  assert.deepStrictEqual(got({ dirs: [P('/g')] }), [P('di/e.wav'), P('dir-x/d.wav'), 'dir.wav', P('dir0/c.wav')]);
   db.removeFolder(f.id);
   assert.deepStrictEqual(db.listHidden(), []);
 });
 
 test('incremental sync: unchanged files untouched, re-tagged only when the rules change', () => {
-  const f = db.addFolder('/i', 'i');
-  const files = [{ path: '/i/Kick.wav', size: 1, mtime: 1 }, { path: '/i/Kick 2.wav', size: 1, mtime: 1 }, { path: '/i/Other.wav', size: 1, mtime: 1 }];
-  const tagsOf = () => Object.fromEntries(db.listSamples({ dirs: ['/i'] }).rows.map((r) => [r.filename, r.tags]));
+  const f = db.addFolder(P('/i'), 'i');
+  const files = [{ path: P('/i/Kick.wav'), size: 1, mtime: 1 }, { path: P('/i/Kick 2.wav'), size: 1, mtime: 1 }, { path: P('/i/Other.wav'), size: 1, mtime: 1 }];
+  const tagsOf = () => Object.fromEntries(db.listSamples({ dirs: [P('/i')] }).rows.map((r) => [r.filename, r.tags]));
   db.syncFolder(f.id, files, tagger, { rulesHash: 'v1' });
-  db.setTags(db.getByPath('/i/Kick 2.wav').id, ['mine']);
+  db.setTags(db.getByPath(P('/i/Kick 2.wav')).id, ['mine']);
   db.takeChanges();
 
   // Same files, same rules: nothing written, nothing to report.
@@ -182,7 +183,7 @@ test('incremental sync: unchanged files untouched, re-tagged only when the rules
   // A changed file is re-tagged even with the same rules.
   db.syncFolder(f.id, [files[0], files[1], { ...files[2], size: 2 }], newRules, { rulesHash: 'v1' });
   assert.deepStrictEqual(tagsOf()['Other.wav'], ['other']);
-  assert.deepStrictEqual(db.takeChanges().dirs, [{ folderId: f.id, dir: '/i', delta: 0 }]);
+  assert.deepStrictEqual(db.takeChanges().dirs, [{ folderId: f.id, dir: P('/i'), delta: 0 }]);
 
   // New rules: every file re-tagged, hand-edited ones left alone.
   db.syncFolder(f.id, files, newRules, { rulesHash: 'v2' });
@@ -192,71 +193,71 @@ test('incremental sync: unchanged files untouched, re-tagged only when the rules
 });
 
 test('no rules loaded (broken tag-rules.json): unchanged files keep their auto tags', () => {
-  const f = db.addFolder('/n', 'n');
-  const files = [{ path: '/n/Kick.wav', size: 1, mtime: 1 }];
+  const f = db.addFolder(P('/n'), 'n');
+  const files = [{ path: P('/n/Kick.wav'), size: 1, mtime: 1 }];
   db.syncFolder(f.id, files, tagger, { rulesHash: 'v1' });
   db.syncFolder(f.id, files, () => [], { rulesHash: null });
-  assert.deepStrictEqual(db.listSamples({ dirs: ['/n'] }).rows[0].tags, ['kick']);
+  assert.deepStrictEqual(db.listSamples({ dirs: [P('/n')] }).rows[0].tags, ['kick']);
   // …and the next good load isn't mistaken for "rules unchanged".
   db.syncFolder(f.id, files, () => ['boom'], { rulesHash: 'v2' });
-  assert.deepStrictEqual(db.listSamples({ dirs: ['/n'] }).rows[0].tags, ['boom']);
+  assert.deepStrictEqual(db.listSamples({ dirs: [P('/n')] }).rows[0].tags, ['boom']);
   db.removeFolder(f.id);
 });
 
 test('change log: per-directory deltas and the version listDirs reports', () => {
-  const f = db.addFolder('/c', 'c');
+  const f = db.addFolder(P('/c'), 'c');
   db.takeChanges();
-  const files = ['a/1.wav', 'a/2.wav', 'b/3.wav'].map((p) => ({ path: `/c/${p}`, size: 1, mtime: 1 }));
+  const files = [P('a/1.wav'), P('a/2.wav'), P('b/3.wav')].map((p) => ({ path: P(`/c/${p}`), size: 1, mtime: 1 }));
   db.syncFolder(f.id, files, () => [], { rulesHash: 'x' });
   let c = db.takeChanges();
-  assert.deepStrictEqual(c.dirs.map((d) => [d.dir, d.delta]), [['/c/a', 2], ['/c/b', 1]]);
+  assert.deepStrictEqual(c.dirs.map((d) => [d.dir, d.delta]), [[P('/c/a'), 2], [P('/c/b'), 1]]);
   assert.strictEqual(db.listDirs().version, c.to);
 
-  db.movePath('/c/a/1.wav', '/c/b/1.wav', f.id, []);
-  db.removePath('/c/a/2.wav');
-  db.removePath('/c/nothing.wav'); // not in the library: no change
+  db.movePath(P('/c/a/1.wav'), P('/c/b/1.wav'), f.id, []);
+  db.removePath(P('/c/a/2.wav'));
+  db.removePath(P('/c/nothing.wav')); // not in the library: no change
   c = db.takeChanges();
-  assert.deepStrictEqual(c.dirs.map((d) => [d.dir, d.delta]), [['/c/a', -2], ['/c/b', 1]]);
-  assert.deepStrictEqual(db.listDirs().dirs.filter((d) => d.folderId === f.id).map((d) => [d.dir, d.n]), [['/c/b', 2]]);
+  assert.deepStrictEqual(c.dirs.map((d) => [d.dir, d.delta]), [[P('/c/a'), -2], [P('/c/b'), 1]]);
+  assert.deepStrictEqual(db.listDirs().dirs.filter((d) => d.folderId === f.id).map((d) => [d.dir, d.n]), [[P('/c/b'), 2]]);
 
-  db.removeDir('/c/b');
-  assert.deepStrictEqual(db.takeChanges().dirs, [{ folderId: f.id, dir: '/c/b', delta: -2 }]);
-  db.hideDir('/c/x');
+  db.removeDir(P('/c/b'));
+  assert.deepStrictEqual(db.takeChanges().dirs, [{ folderId: f.id, dir: P('/c/b'), delta: -2 }]);
+  db.hideDir(P('/c/x'));
   assert.ok(db.takeChanges().all);
   db.removeFolder(f.id);
 });
 
 test('chunked async sync matches, and keeps rows added while the walk ran', async () => {
-  const f = db.addFolder('/big', 'big');
-  const files = Array.from({ length: 4500 }, (_, i) => ({ path: `/big/d${i % 7}/s${i}.wav`, size: i, mtime: 1 }));
+  const f = db.addFolder(P('/big'), 'big');
+  const files = Array.from({ length: 4500 }, (_, i) => ({ path: P(`/big/d${i % 7}/s${i}.wav`), size: i, mtime: 1 }));
   await db.syncFolderAsync(f.id, files, (p) => (p.endsWith('0.wav') ? ['zero'] : []), { rulesHash: 'r' });
-  assert.strictEqual(db.listSamples({ dirs: ['/big'] }).rows.length, 4500);
-  assert.strictEqual(db.listSamples({ dirs: ['/big'], tags: ['zero'] }).rows.length, 450);
+  assert.strictEqual(db.listSamples({ dirs: [P('/big')] }).rows.length, 4500);
+  assert.strictEqual(db.listSamples({ dirs: [P('/big')], tags: ['zero'] }).rows.length, 450);
   // Stored counts and the search index both span every chunk of the sync
   // (CHUNK is well under 4500), not just the first one.
   assert.strictEqual(db.listTags().tags.find((t) => t.name === 'zero').count, 450);
-  assert.strictEqual(db.listSamples({ dirs: ['/big'], search: 'wav' }).rows.length, 4500);
-  assert.strictEqual(db.listSamples({ dirs: ['/big'], search: 's4499' }).rows.length, 1);
+  assert.strictEqual(db.listSamples({ dirs: [P('/big')], search: 'wav' }).rows.length, 4500);
+  assert.strictEqual(db.listSamples({ dirs: [P('/big')], search: 's4499' }).rows.length, 1);
 
   // A walk that started before this file was added (by the watcher) doesn't list it.
   await new Promise((r) => setTimeout(r, 5));
   const startedAt = Date.now();
   await new Promise((r) => setTimeout(r, 5));
-  db.upsertFile(f.id, { path: '/big/new.wav', size: 1, mtime: 1 }, []);
+  db.upsertFile(f.id, { path: P('/big/new.wav'), size: 1, mtime: 1 }, []);
   await db.syncFolderAsync(f.id, files.slice(1), () => [], { rulesHash: 'r', startedAt });
-  const paths = new Set(db.listSamples({ dirs: ['/big'] }).rows.map((r) => r.path));
+  const paths = new Set(db.listSamples({ dirs: [P('/big')] }).rows.map((r) => r.path));
   assert.strictEqual(paths.size, 4500);
-  assert.ok(paths.has('/big/new.wav'));
-  assert.ok(!paths.has('/big/d0/s0.wav'));
+  assert.ok(paths.has(P('/big/new.wav')));
+  assert.ok(!paths.has(P('/big/d0/s0.wav')));
 
   // New rules, nothing else changed: every unchanged file goes through the
   // retag branch (not upsertOne), still batched per chunk — see reindexMany.
-  const same = [...files.slice(1), { path: '/big/new.wav', size: 1, mtime: 1 }];
+  const same = [...files.slice(1), { path: P('/big/new.wav'), size: 1, mtime: 1 }];
   const nine = same.filter((file) => file.path.endsWith('9.wav'));
   await db.syncFolderAsync(f.id, same, (p) => (p.endsWith('9.wav') ? ['nine'] : []), { rulesHash: 'r2' });
   assert.strictEqual(db.listTags().tags.find((t) => t.name === 'nine').count, nine.length);
   assert.strictEqual(db.listTags().tags.find((t) => t.name === 'zero').count, 0); // dropped everywhere
-  assert.strictEqual(db.listSamples({ dirs: ['/big'], search: 'wav' }).rows.length, 4500); // still every row
+  assert.strictEqual(db.listSamples({ dirs: [P('/big')], search: 'wav' }).rows.length, 4500); // still every row
 
   db.removeFolder(f.id);
 });
