@@ -1,8 +1,9 @@
 name: Release
 
-# Push a version tag (v0.1.0, …) to build the app and attach it to a GitHub
-# release for that tag. Run it by hand (Actions → Release → Run workflow) to
-# build without publishing: the files are kept as workflow artifacts.
+# Push a version tag (v0.1.0, …) to build the app for macOS and Windows and
+# attach it to a GitHub release for that tag. Run it by hand (Actions →
+# Release → Run workflow) to build without publishing: the files are kept as
+# workflow artifacts.
 on:
   push:
     tags: ['v*']
@@ -23,9 +24,7 @@ jobs:
       - run: npm ci # also rebuilds better-sqlite3 for Electron
       - run: npm test
       - name: Build
-        run: >
-          npx electron-builder --mac dmg zip --arm64 --publish never
-          -c.artifactName='Sample-Manager-${version}-mac-${arch}.${ext}'
+        run: npx electron-builder --mac dmg zip --arm64 --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false' # ad-hoc signed (identity "-"), no certificate
       - uses: actions/upload-artifact@v4
@@ -36,9 +35,31 @@ jobs:
             dist/*.zip
           if-no-files-found: error
 
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Build
+        run: npx electron-builder --win nsis zip --x64 --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false' # unsigned
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            dist/*.exe
+            dist/*.zip
+          if-no-files-found: error
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [mac]
+    needs: [mac, windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -50,7 +71,7 @@ jobs:
           files: out/*
           fail_on_unmatched_files: true
           body: |
-            ## Install (macOS, Apple Silicon)
+            ## macOS (Apple Silicon)
 
             1. Download the `-mac-arm64.dmg` below, open it and drag **Sample Manager** to Applications.
             2. The app isn't notarized by Apple, so the first launch is blocked. Open it once, then go to **System Settings → Privacy & Security** and click **Open Anyway**. Or, in Terminal:
@@ -58,3 +79,9 @@ jobs:
                xattr -dr com.apple.quarantine "/Applications/Sample Manager.app"
                ```
             3. Press **⌘O** to add a sample folder.
+
+            ## Windows (x64)
+
+            1. Download the `-win-x64.exe` installer (or the `.zip` to run it without installing).
+            2. The app isn't code-signed, so SmartScreen may warn: click **More info → Run anyway**.
+            3. Press **Ctrl+O** to add a sample folder. For Apple Loops (`.caf`) install ffmpeg (`winget install ffmpeg`).

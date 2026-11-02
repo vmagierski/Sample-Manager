@@ -5,9 +5,25 @@ Electron app, vanilla JS, no bundler. A library worker (an Electron `utilityProc
 ```sh
 npm install        # also rebuilds better-sqlite3 for Electron
 npm start
-npm test           # unit tests (run under Electron's Node)
+npm test           # unit tests (run under Electron's Node, via scripts/electron-node.js)
 SM_USER_DATA=/tmp/sm-test npm start   # use a throwaway library
 ```
+
+Works the same on macOS and Windows (Node 22; on Windows, `npm install` needs the Visual Studio C++ build tools only if no prebuilt better-sqlite3 matches). In PowerShell, set variables first: `$env:SM_USER_DATA="$env:TEMP\sm-test"; npm start`.
+
+### Platform differences
+
+Paths in the library are native (`\` on Windows), so `db.js` and the renderer use the platform's separator (`path.sep`; `window.sm.sep` in pages) rather than `/`. Folder locations come from the OS (`src/main/paths.js`, `app.getPath`), never from a fixed home layout. Decoding CAF — and MP3/M4A/FLAC/OGG when cutting a crop — goes through `src/main/convert.js`: afconvert on macOS, ffmpeg elsewhere (`$SM_FFMPEG`, then `resources/ffmpeg.exe` next to the app, then `PATH`). Without ffmpeg, the page cuts crops from the audio it decoded (`crop:provide`). Labels are written the Mac way and translated in pages by `window.sm.keys` (⌘ → Ctrl) and in main by `src/main/words.js` (Finder → File Explorer).
+
+## Releases
+
+`.github/workflows/release.yml` builds on a version tag: an ad-hoc signed Apple Silicon `.dmg`/`.zip` on macOS and an unsigned x64 NSIS installer/`.zip` on Windows, after `npm test` on each, and attaches them to a GitHub release. To cut one, bump `version` in `package.json`, then:
+
+```sh
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+`.github/workflows/ci.yml` runs the tests on macOS and Windows for every push and keeps a Windows `.zip` build as a workflow artifact. Locally: `npm run dist:mac` / `npm run dist:win` (`npm run dist` for an unpacked build of the current platform).
 
 ## Benchmarks
 
@@ -17,11 +33,11 @@ npm run bench -- --json        # machine-readable results
 npm run bench -- --skip-large --skip-scan --runs 3
 ```
 
-`scripts/make-bench-library.js` (also `npm run bench:make`) builds a throwaway library in `$TMPDIR/sm-bench` (or `--dir` / `SM_BENCH_DIR`): a `library.db` with ~750k samples in realistic packs, tagged by `tag-rules.json` (the paths exist only in the database); a real `tree/` of ~30k small WAVs for scan timing; and `large/` with a 30-minute WAV, the same audio as AIFF and ALAC CAF, and a 10-minute AAC CAF. Each part is only built if missing; `--force` rebuilds, and `--samples`, `--tree-files` and `--large-min` change the sizes.
+`scripts/make-bench-library.js` (also `npm run bench:make`) builds a throwaway library in the temp folder's `sm-bench` (or `--dir` / `SM_BENCH_DIR`): a `library.db` with ~750k samples in realistic packs, tagged by `tag-rules.json` (the paths exist only in the database); a real `tree/` of ~30k small WAVs for scan timing; and `large/` with a 30-minute WAV, the same audio as AIFF and ALAC CAF, and a 10-minute AAC CAF (AIFF and ALAC need afconvert or ffmpeg; the AAC CAF only afconvert). Each part is only built if missing; `--force` rebuilds, and `--samples`, `--tree-files` and `--large-min` change the sizes.
 
 `scripts/bench.js` times main-list queries and searches as the main window runs them (a view's id list plus the first screen of rows, and the cost of cloning them to the renderer), `listDirs` and `listTags` (with and without a hidden folder), a first scan and an unchanged rescan of `tree/` (with the longest the library worker's event loop is blocked), and `readPlayable` / `cropToWav` on each large file, each in its own process for a clean peak memory figure. Each line is compared with a target (50 ms for list queries, 100 ms for an unchanged `syncFolder`, 150 ms and 1 GB for the large files). Misses are reported, not failed: it's a measuring tool, not part of `npm test`.
 
-## Installing as a Mac app
+## Installing as a Mac app (from source)
 
 ```sh
 npm run install-app   # builds dist/mac-arm64/Sample Manager.app and copies it to /Applications
@@ -31,14 +47,17 @@ Quit the app first (⌥⌘Q — ⌘Q only closes the window to the menu bar). Re
 
 ## Where things live
 
+*Data* is Electron's app data folder + `sample-manager` (`~/Library/Application Support` on macOS, `%APPDATA%` on Windows). *Cache* is `~/Library/Caches/Sample Manager` on macOS, `%LOCALAPPDATA%\Sample Manager\Cache` on Windows, `~/.cache/sample-manager` on Linux. *Music* is the OS's Music folder.
+
 | What | Where |
 |---|---|
-| Library database | `~/Library/Application Support/sample-manager/library.db` |
-| Tag rules (installed app) | `~/Library/Application Support/sample-manager/tag-rules.json` — seeded from the repo's on first launch; in dev the repo's file is used |
-| Settings | `~/Library/Application Support/sample-manager/settings.json` (`quickSearchHotkey`) |
-| Recordings | `~/Music/Sample Manager/Recordings` |
-| Dragged crops | `~/Library/Caches/Sample Manager/Crops` (deleted a week after their last drag) |
-| Converted CAFs | `~/Library/Caches/Sample Manager/Converted` (WAV copies for playback and crops; capped at 2 GB, least recently used go first) |
+| Library database | *Data*`/library.db` |
+| Tag rules (installed app) | *Data*`/tag-rules.json` — seeded from the repo's on first launch; in dev the repo's file is used |
+| Settings | *Data*`/settings.json` (`quickSearchHotkey`) |
+| Recordings | *Music*`/Sample Manager/Recordings` |
+| Kits | *Music*`/Sample Manager/Kits` |
+| Dragged crops | *Cache*`/Crops` (deleted a week after their last drag) |
+| Converted CAFs | *Cache*`/Converted` (WAV copies for playback and crops; capped at 2 GB, least recently used go first) |
 
 ## Layout
 
@@ -56,6 +75,9 @@ Quit the app first (⌥⌘Q — ⌘Q only closes the window to the menu bar). Re
 | `src/main/kits.js` | Kit names, collision handling and defaults (pure); the copying itself is in `library-service.js` |
 | `src/main/crop.js` | Rendering, dragging and pruning crops |
 | `src/main/audio.js` | AIFF/CAF decoding, WAV slicing |
+| `src/main/convert.js` | Decoding via afconvert (macOS) or ffmpeg (elsewhere) |
+| `src/main/paths.js` | Per-platform cache and music folders |
+| `src/main/words.js` | Per-platform names in menus (Finder / File Explorer, Trash / Recycle Bin) |
 | `src/main/convcache.js` | On-disk cache of CAF conversions |
 | `src/main/latest.js` | One sample load per window at a time, newest wins |
 | `src/main/quick.js` | Quick Search panel, menu-bar icon, global hotkey |
@@ -70,6 +92,8 @@ Environment variables for a test copy:
 - `SM_USER_DATA` — a separate library / settings folder. A test copy with this set doesn't register the global hotkey, so it can't take ⌃⌥Space from the installed app.
 - `SM_CROP_DIR` — where dragged crops go.
 - `SM_CACHE_DIR` — where converted CAFs are cached.
-- `SM_KITS_DIR` — where kits are made (default `~/Music/Sample Manager/Kits`). If it isn't inside a library folder, creating a kit adds it to the library as "Kits".
+- `SM_MUSIC_DIR` — the app's own folder (default *Music*`/Sample Manager`), for recordings and kits.
+- `SM_KITS_DIR` — where kits are made (default *Music*`/Sample Manager/Kits`).
+- `SM_FFMPEG` — the ffmpeg to use where there's no afconvert. If it isn't inside a library folder, creating a kit adds it to the library as "Kits".
 - `SM_NO_HOTKEY` — skip the hotkey; `SM_HOTKEY` — register it even with `SM_USER_DATA`.
-- `SM_START_HIDDEN` — start in the menu bar only, as a login launch does.
+- `SM_START_HIDDEN` — start in the menu bar / tray only, as a login launch does (on Windows the login item passes `--hidden`).

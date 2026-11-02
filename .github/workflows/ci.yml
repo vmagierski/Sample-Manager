@@ -1,0 +1,35 @@
+name: CI
+
+# Tests on macOS and Windows for every push and pull request, and an
+# unsigned Windows build kept as a workflow artifact for trying a branch out.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci # also rebuilds better-sqlite3 for Electron
+      - run: npm test
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        run: npx electron-builder --win zip --x64 --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Windows'
+        with:
+          name: windows-build
+          path: dist/*.zip
+          retention-days: 14

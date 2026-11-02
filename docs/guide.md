@@ -9,6 +9,9 @@
 - [Random, Rec and Last 10s](#random-rec-and-last-10s)
 - [Tags](#tags)
 - [Keyboard shortcuts](#keyboard-shortcuts)
+- [Where files go](#where-files-go)
+
+Sample Manager runs on macOS and Windows. Keys are written the Mac way; on Windows use **Ctrl** for ⌘ and ⌃, **Alt** for ⌥ and **Shift** for ⇧ (so ⌘O is Ctrl+O and ⌃⌥Space is Ctrl+Alt+Space). Finder is File Explorer, the Trash is the Recycle Bin, and the menu bar icon is in the system tray.
 
 ## Library and folders
 
@@ -22,9 +25,9 @@ The sidebar shows your folders as a tree. Click a folder (or a subfolder via ▸
 
 A Spotlight-style panel you can open from anywhere, including over full-screen Logic. Type to search the whole library; `#tag` narrows by tag (`#ki` is enough; Space / Tab / Enter turns it into a chip). **↑/↓** audition, **⇧↵** play / stop, **drag** a result straight into Logic, **↵** open it in the main window, **⌘↵** show it in Finder, **esc** close.
 
-Sample Manager lives in the menu bar (waveform icon) so the hotkey and folder watching keep working when its window is closed. **⌘Q** closes the window to the menu bar; **⌥⌘Q** or the menu-bar icon → *Quit* quits completely. *Open at Login* in the icon's menu starts it quietly in the menu bar.
+Sample Manager lives in the menu bar (waveform icon) so the hotkey and folder watching keep working when its window is closed. **⌘Q** closes the window to the menu bar; **⌥⌘Q** or the menu-bar icon → *Quit* quits completely. *Open at Login* in the icon's menu starts it quietly in the menu bar. On Windows the icon is in the system tray (click it to open the window, right-click for the menu); **Ctrl+Q** closes to the tray and **Ctrl+Shift+Q** quits.
 
-To change the hotkey, put e.g. `{ "quickSearchHotkey": "Control+Alt+Space" }` in `~/Library/Application Support/sample-manager/settings.json` and restart.
+To change the hotkey, put e.g. `{ "quickSearchHotkey": "Control+Alt+Space" }` in `settings.json` in the app's data folder (see [Where files go](#where-files-go)) and restart.
 
 ## Searching and filtering
 
@@ -56,11 +59,11 @@ Drag across the waveform to select part of a sample. Drag the edges to resize, d
 
 Dragging the sample now drags just the crop. The **⠿ Drag crop · Save…** handle on the region does the same, or **Save…** writes the crop as a WAV wherever you like. WAV and AIFF crops are cut losslessly in the original format; other formats become 24-bit WAV.
 
-Dragged crops aren't kept: they're written to `~/Library/Caches/Sample Manager/Crops` and deleted a week after their last drag. So Logic keeps its own copy, turn on **File › Project Settings › Assets › Copy audio files into project** (and save it in your project template) — saving the project then copies the crop in. Use **Save…** to keep a crop for good.
+Dragged crops aren't kept: they're written to the app's cache folder (see [Where files go](#where-files-go)) and deleted a week after their last drag. So Logic keeps its own copy, turn on **File › Project Settings › Assets › Copy audio files into project** (and save it in your project template) — saving the project then copies the crop in. Use **Save…** to keep a crop for good.
 
 ## Kits
 
-A kit is a folder of sounds you've gathered, at `~/Music/Sample Manager/Kits/<name>`. Select one or more samples and press **⌘K** (or right-click → **New Kit from Selection…**), name it — the name defaults to the folder or tag the sounds share — and they're copied in. Right-click → **Add to Kit** puts a selection into an existing kit.
+A kit is a folder of sounds you've gathered, at `Sample Manager/Kits/<name>` in your Music folder. Select one or more samples and press **⌘K** (or right-click → **New Kit from Selection…**), name it — the name defaults to the folder or tag the sounds share — and they're copied in. Right-click → **Add to Kit** puts a selection into an existing kit.
 
 Kits hold real copies, so a kit folder is self-contained: drag it from the sidebar into Logic or the Finder and everything comes with it. A sample with a crop is copied as just the cropped part (a WAV); tags you edited by hand are carried over. Two sounds with the same name become `Kick.wav` and `Kick 2.wav`. If some files can't be copied (a missing source, a full disk) the rest still are, and you're told which.
 
@@ -70,11 +73,11 @@ The folder is inside your library, so kits are indexed and searchable like any o
 
 **R** or **⤮ Random** plays a random sample from whatever the current filters show, or from the whole library when nothing is filtered. **⇧R** (or ⇧-click ⤮ Random) also drops a crop region at a random spot in it and loops it — as long as the last crop you made, or 1 second before you've made one. Drag it into Logic like any crop.
 
-**● Rec** records whatever Sample Manager plays — audition a few samples, play with a crop loop — and **⟲ Last 10s** saves the last ten seconds you heard, after the fact. Both save 24-bit WAVs to `~/Music/Sample Manager/Recordings`, which is in your library, and select the new recording so you can play or drag it straight away.
+**● Rec** records whatever Sample Manager plays — audition a few samples, play with a crop loop — and **⟲ Last 10s** saves the last ten seconds you heard, after the fact. Both save 24-bit WAVs to `Sample Manager/Recordings` in your Music folder, which is in your library, and select the new recording so you can play or drag it straight away.
 
 ## Tags
 
-Samples are tagged automatically from their file and folder names by the rules in `tag-rules.json` (File → Edit Tag Rules…, then rescan). Each rule is `{tag, pattern}` — a case-insensitive regex matched against the path below the library folder — or `{tag, folder}` for everything in a folder. The installed app keeps its copy at `~/Library/Application Support/sample-manager/tag-rules.json`.
+Samples are tagged automatically from their file and folder names by the rules in `tag-rules.json` (File → Edit Tag Rules…, then rescan). Each rule is `{tag, pattern}` — a case-insensitive regex matched against the path below the library folder — or `{tag, folder}` for everything in a folder (`~` is your home folder, `{appFolder}` the app's own Sample Manager folder in Music). Add `"platform": "darwin"` or `"win32"` to a rule to use it only on that system. The installed app keeps its copy in its data folder (see below).
 
 Press **Enter** or **T** (or click a row's tag cell) to edit a sample's tags, comma-separated. Once you've edited a sample's tags, rescans leave them alone. Right-click a tag in the sidebar to delete it.
 
@@ -101,4 +104,14 @@ Press **Enter** or **T** (or click a row's tag cell) to edit a sample's tags, co
 | ⌥⌘R | Show current sample in Finder |
 | ⌘O / ⇧⌘R | Add folder / rescan library |
 | ⌃⌥Space | Quick Search, from anywhere |
-| ⌘Q / ⌥⌘Q | Close to menu bar / quit |
+| ⌘Q / ⌥⌘Q | Close to menu bar / quit (Windows: Ctrl+Q / Ctrl+Shift+Q) |
+
+## Where files go
+
+| What | macOS | Windows |
+|---|---|---|
+| Library, settings, tag rules | `~/Library/Application Support/sample-manager/` | `%APPDATA%\sample-manager\` |
+| Recordings and kits | `~/Music/Sample Manager/` | `Music\Sample Manager\` (your Music folder, wherever Windows keeps it) |
+| Dragged crops, converted CAFs | `~/Library/Caches/Sample Manager/` | `%LOCALAPPDATA%\Sample Manager\Cache\` |
+
+**Apple Loops (`.caf`) on Windows** need [ffmpeg](https://ffmpeg.org): install it (`winget install ffmpeg`) and restart Sample Manager. It's found on `PATH`, or set `SM_FFMPEG` to its full path. Without it every other format still plays, and crops of MP3, FLAC, OGG and M4A are cut from the audio Sample Manager has already decoded (at its playback sample rate rather than the file's).
