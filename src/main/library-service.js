@@ -1,4 +1,11 @@
 const fs = require('fs');
+const { promisify } = require('util');
+
+// Library paths are canonicalized by fs.realpath's JS implementation
+// everywhere (realpathSync, and this). fs.promises.realpath is the native
+// one, which differs on Windows: it expands 8.3 short names (RUNNER~1), so a
+// kit folder wouldn't match the library folder that holds it.
+const realpath = promisify(fs.realpath);
 const os = require('os');
 const path = require('path');
 const db = require('./db');
@@ -271,7 +278,7 @@ function createLibrary({ broadcast, toMain }) {
       const name = kits.safeName(kit);
       if (!name || name !== String(kit).trim()) throw new Error('That isn’t a usable kit name');
       await fs.promises.mkdir(config.kitsDir, { recursive: true });
-      const root = await fs.promises.realpath(config.kitsDir);
+      const root = await realpath(config.kitsDir);
       const dir = path.join(root, name);
       if (create) {
         try {
@@ -362,7 +369,7 @@ function createLibrary({ broadcast, toMain }) {
       const name = kits.safeName(to);
       if (!name || name !== String(to).trim()) throw new Error('That isn’t a usable kit name');
       if (kits.safeName(from) !== from) throw new Error('Not a kit');
-      const root = await fs.promises.realpath(config.kitsDir);
+      const root = await realpath(config.kitsDir);
       const src = path.join(root, from);
       const dest = path.join(root, name);
       if (name === from) return { kit: name, dir: dest };
